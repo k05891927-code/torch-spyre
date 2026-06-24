@@ -94,7 +94,7 @@ jobs:
           mkdir -p coverage
           if [[ -n "$RUN_ID" ]]; then
             if gh run download "$RUN_ID" --repo "$TARGET_REPO"  -D old_coverage; then
-              echo "is_first_run=false" >> "$GITHUB_OUTPUT"
+              echo "is_first_run=true" >> "$GITHUB_OUTPUT"
               
               echo "DOWNLOAD SUCCESSFUL: Listing old_coverage/ folder"
               ls -al old_coverage
@@ -129,6 +129,12 @@ jobs:
             HEAD_SHA="${{ github.event.pull_request.head.sha }}"
             ALL_CHANGED=$(git diff --name-only "$FORK_SHA" "$HEAD_SHA" | tr '\n' ' ')
             ONLY_ADDED=$(git diff --name-only --diff-filter=A "$FORK_SHA" "$HEAD_SHA" | tr '\n' ' ')
+
+            echo "ALL CHANGED FILES:"
+            git diff --name-only "$FORK_SHA" "$HEAD_SHA" | sed 's/^/  /'
+            echo "ONLY ADDED FILES:"
+            git diff --name-only --diff-filter=A "$FORK_SHA" "$HEAD_SHA" | sed 's/^/  /'
+
           else
             TARGET="${{ github.event.before }}"
             if [[ -z "$TARGET" || "$TARGET" == "0000000000000000000000000000000000000000" ]]; then
@@ -256,14 +262,14 @@ jobs:
             --cov=torch_spyre \
             --cov-report=json:/home/senuser/torch-spyre/coverage/$SUITE_DIR/coverage.json
 
-      # Isolated multi-matrix uploads to avoid parallel racing overwrites
-      - name: Upload segment 
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: coverage-data-${{ matrix.suite.name }}_config
-          path: /home/senuser/torch-spyre/coverage/
-          retention-days: 1
+      # # Isolated multi-matrix uploads to avoid parallel racing overwrites
+      # - name: Upload segment 
+      #   if: always()
+      #   uses: actions/upload-artifact@v4
+      #   with:
+      #     name: coverage-data-${{ matrix.suite.name }}_config
+      #     path: /home/senuser/torch-spyre/coverage/
+      #     retention-days: 1
 
 
   reupload_old_coverage:
