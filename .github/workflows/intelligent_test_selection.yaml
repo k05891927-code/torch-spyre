@@ -130,8 +130,10 @@ jobs:
         run: |
           if [[ "${{ github.event_name }}" == "pull_request" ]]; then
             FORK_POINT=$(git merge-base "origin/${{ github.base_ref }}" HEAD)
-            ALL_CHANGED=$(git diff --name-only "$FORK_POINT" HEAD | tr '\n' ' ')
-            ONLY_ADDED=$(git diff --name-only --diff-filter=A "$FORK_POINT" HEAD | tr '\n' ' ')
+            FORK_SHA=$(git rev-parse "$FORK_POINT")
+            HEAD_SHA="${{ github.event.pull_request.head.sha }}"
+            ALL_CHANGED=$(git diff --name-only "$FORK_SHA" "$HEAD_SHA" | tr '\n' ' ')
+            ONLY_ADDED=$(git diff --name-only --diff-filter=A "$FORK_SHA" "$HEAD_SHA" | tr '\n' ' ')
           else
             TARGET="${{ github.event.before }}"
             if [[ -z "$TARGET" || "$TARGET" == "0000000000000000000000000000000000000000" ]]; then
