@@ -144,7 +144,7 @@ jobs:
 
 
           REPO="${{ github.server_url }}/${{ github.repository }}"
-          HEAD_SHA=$(git rev-parse HEAD)
+          HEAD_SHA=${{ github.event.pull_request.head.sha }}
           FORK_SHA=$(git rev-parse "$FORK_POINT")
 
           echo "============================================"
@@ -161,10 +161,10 @@ jobs:
           echo "COMPARE URL:    $REPO/compare/$FORK_SHA...$HEAD_SHA"
           echo "--------------------------------------------"
           echo "ALL CHANGED FILES:"
-          git diff --name-only "$FORK_SHA" HEAD | sed 's/^/  /'
+          git diff --name-only "$FORK_SHA" "$HEAD_SHA" | sed 's/^/  /'
           echo "--------------------------------------------"
           echo "ONLY ADDED FILES:"
-          git diff --name-only --diff-filter=A "$FORK_SHA" HEAD | sed 's/^/  /'
+          git diff --name-only --diff-filter=A "$FORK_SHA" "$HEAD_SHA" | sed 's/^/  /'
           echo "============================================"
 
 
