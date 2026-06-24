@@ -62,6 +62,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           FORCE_FIRST_RUN=false
+          FORCE_FIRST_RUN=true
           
           if [[ "${{ github.event_name }}" == "pull_request" ]]; then
             TARGET_REPO="torch-spyre/torch-spyre"
