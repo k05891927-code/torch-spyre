@@ -237,8 +237,6 @@ jobs:
       matrix:
         suite: ${{ fromJson(needs.select_suites.outputs.suites) }}
     steps:
-      - name: Checkout Codebase
-        uses: actions/checkout@v4
 
       - name: Checkout composite actions
         uses: actions/checkout@v4
@@ -246,10 +244,10 @@ jobs:
           sparse-checkout: .github/actions
           sparse-checkout-cone-mode: false
 
-      - name: Checkout pre-built torch-spyre
-        uses: ./.github/actions/checkout-prebuilt-torch-spyre
+      - name: Checkout Codebase
+        uses: actions/checkout@v4
         with:
-          repository: ${{ github.event.pull_request.head.repo.clone_url || '' }}
+          path: torch-spyre
 
       - name: Clean Stale Build Cache and Artifacts
         run: |
@@ -265,8 +263,6 @@ jobs:
 
       - name: Build torch-spyre
         uses: ./.github/actions/build-torch-spyre
-        with:
-          torch_spyre_dir: "."
 
       - name: Run Test Suite Configuration with Coverage Logging
         run: |
@@ -275,6 +271,7 @@ jobs:
           rm -rf /tmp/etc/ibm/spyre/topo.json
           source /etc/profile.d/ibm-aiu-setup.sh
           cd "$CLONED_TORCH_SPYRE_DIR"
+          
           pwd
           ls -al
 
