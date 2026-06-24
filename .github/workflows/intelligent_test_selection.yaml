@@ -62,7 +62,6 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           FORCE_FIRST_RUN=false
-          FORCE_FIRST_RUN=true
           
           if [[ "${{ github.event_name }}" == "pull_request" ]]; then
             TARGET_REPO="torch-spyre/torch-spyre"
@@ -100,7 +99,7 @@ jobs:
           mkdir -p coverage
           if [[ -n "$RUN_ID" ]]; then
             if gh run download "$RUN_ID" --repo "$TARGET_REPO"  -D coverage; then
-              echo "is_first_run=false" >> "$GITHUB_OUTPUT"
+              echo "is_first_run=true" >> "$GITHUB_OUTPUT"
               
               echo "DOWNLOAD SUCCESSFUL: Listing coverage/ folder"
               ls -al coverage
@@ -281,7 +280,6 @@ jobs:
               echo "pytest-cov is missing! Installing now..."
               uv pip install pytest-cov
 
-          
           CONFIG_PATH="tests/configs/${{ matrix.suite.config }}"
           echo "Attempting to run tests with config: $CONFIG_PATH"
           if [ ! -f "$CONFIG_PATH" ]; then
