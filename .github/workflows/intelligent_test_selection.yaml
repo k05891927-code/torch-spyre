@@ -271,9 +271,10 @@ jobs:
           rm -rf /tmp/etc/ibm/spyre/topo.json
           source /etc/profile.d/ibm-aiu-setup.sh
           cd "$CLONED_TORCH_SPYRE_DIR"
-          
+
           pwd
           ls -al
+          source .venv/bin/activate
 
           SUITE_DIR=$(python3 -c "
           import pathlib

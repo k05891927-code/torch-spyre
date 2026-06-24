@@ -28,11 +28,6 @@ runs:
       env:
         TORCH_SPYRE_DIR: ${{ inputs.torch_spyre_dir }}
       run: |
-        
-        pwd 
-        ls -al 
-        echo "11111111111111111111"
-        
         source "$HOME/.bashrc"
         source /etc/profile.d/ibm-aiu-setup.sh
 
@@ -40,20 +35,10 @@ runs:
         echo "TORCH_SPYRE_DIR $TORCH_SPYRE_DIR"
 
         cd "$TORCH_SPYRE_DIR"
-        
-        pwd 
-        ls -al
-        echo "222222222222222222222"
-        
         uv sync \
           --verbose \
           --frozen \
           --all-extras
-        
-        pwd
-        ls -al
-        echo "3333333333333333"
-
         source .venv/bin/activate
         uv pip show torch
         uv pip freeze
