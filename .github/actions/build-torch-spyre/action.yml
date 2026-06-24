@@ -39,6 +39,9 @@ runs:
           --verbose \
           --frozen \
           --all-extras
+        
+        pwd
+        ls -al
         source .venv/bin/activate
         uv pip show torch
         uv pip freeze
