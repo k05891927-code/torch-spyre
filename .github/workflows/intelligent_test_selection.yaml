@@ -93,11 +93,11 @@ jobs:
 
           mkdir -p coverage
           if [[ -n "$RUN_ID" ]]; then
-            if gh run download "$RUN_ID" --repo "$TARGET_REPO"  -D coverage; then
-              echo "is_first_run=true" >> "$GITHUB_OUTPUT"
+            if gh run download "$RUN_ID" --repo "$TARGET_REPO"  -D old_coverage; then
+              echo "is_first_run=false" >> "$GITHUB_OUTPUT"
               
-              echo "DOWNLOAD SUCCESSFUL: Listing coverage/ folder"
-              ls -al coverage
+              echo "DOWNLOAD SUCCESSFUL: Listing old_coverage/ folder"
+              ls -al old_coverage
 
             else
               echo "is_first_run=true" >> "$GITHUB_OUTPUT"
@@ -265,52 +265,83 @@ jobs:
           path: /home/senuser/torch-spyre/coverage/
           retention-days: 1
 
-  # consolidate_mappings:
-  #   name: Save Master Mapping States
-  #   needs: [select_suites, run_suites]
-  #   if: always()
-  #   runs-on: ubuntu-latest
-  #   steps:
 
-  #     - name: Download and Merge Coverage
-  #       if: needs.select_suites.outputs.has_suites == 'true'
-  #       uses: actions/download-artifact@v4
-  #       with:
-  #         pattern: coverage-data-*
-  #         path: final_coverage
-  #         merge-multiple: true
-      
-  #     - name: Upload Final Consolidated Map
-  #       if: needs.select_suites.outputs.has_suites == 'true'
-  #       uses: actions/upload-artifact@v4
-  #       with:
-  #         name: complete-coverage-map
-  #         path: final_coverage/
-  #         retention-days: 3
+reupload_old_coverage:
+  name: Re-upload Untouched Coverage Suites
+  needs: [select_suites, run_suites]
+  if: always() && needs.select_suites.outputs.is_first_run == 'false'
+  runs-on: ubuntu-latest
+  steps:
 
-  #     # - name: Create working map layout
-  #     #   run: mkdir -p compiled_output/
+    - name: Download old coverage artifacts
+      uses: actions/download-artifact@v4
+      with:
+        pattern: coverage-data-*
+        path: new_coverage
+        merge-multiple: false
 
-  #     # # 1. Download our base baseline seed
-  #     # - name: Fetch Baseline Seed
-  #     #   uses: actions/download-artifact@v4
-  #     #   with:
-  #     #     name: baseline-seed-coverage
-  #     #     path: compiled_output/
+    - name: Download old coverage from previous run
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
+            TARGET_REPO="torch-spyre/torch-spyre"
+            TARGET_SHA="${{ github.event.before }}"
+          else
+            TARGET_REPO="${{ github.repository }}"
+            TARGET_SHA="${{ github.event.before }}"
+          fi
 
-  #     # # 2. Layer any newly run metrics seamlessly on top
-  #     # - name: Fetch Matrix Iterations
-  #     #   if: needs.select_suites.outputs.has_suites == 'true'
-  #     #   uses: actions/download-artifact@v4
-  #     #   with:
-  #     #     path: compiled_output/
-  #     #     pattern: batch-coverage-*
-  #     #     merge-multiple: true
+          RUN_ID=$(gh run list \
+            --repo "$TARGET_REPO" \
+            --workflow "intelligent_test_selection.yaml" \
+            --json databaseId,headSha \
+            --jq ".[] | select(.headSha==\"$TARGET_SHA\") | .databaseId" \
+            | head -n1)
 
-  #     # # 3. Ship out the completely clean unified map package
-  #     # - name: Upload Consolidated Complete Coverage Map
-  #     #   uses: actions/upload-artifact@v4
-  #     #   with:
-  #     #     name: complete-coverage-map
-  #     #     path: compiled_output/
-  #     #     retention-days: 3
+          if [[ -n "$RUN_ID" ]]; then
+            gh run download "$RUN_ID" --repo "$TARGET_REPO" -D old_coverage
+            echo "RUN_ID=$RUN_ID" >> "$GITHUB_ENV"
+          else
+            echo "No previous run found, nothing to re-upload"
+          fi
+
+    - name: Re-upload missing suites individually
+      if: env.RUN_ID != ''
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        # Build list of suites that ran this time
+        RAN=()
+        for d in new_coverage/coverage-data-*/; do
+          [[ -d "$d" ]] || continue
+          suite=$(basename "$d" | sed 's/^coverage-data-//')
+          RAN+=("$suite")
+        done
+        echo "Suites ran this time: ${RAN[*]}"
+
+        # Find old suites not in this run and upload each individually
+        for d in old_coverage/coverage-data-*/; do
+          [[ -d "$d" ]] || continue
+          suite=$(basename "$d" | sed 's/^coverage-data-//')
+
+          if [[ " ${RAN[*]} " =~ " ${suite} " ]]; then
+            echo "Skipping $suite (ran this time, already uploaded)"
+            continue
+          fi
+
+          echo "Re-uploading missing suite: $suite"
+          src="old_coverage/coverage-data-${suite}"
+          dst="reupload/${suite}"
+          mkdir -p "$dst"
+          cp -r "$src/." "$dst/"
+
+          gh api \
+            --method POST \
+            -H "Accept: application/vnd.github+json" \
+            /repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/artifacts \
+            2>/dev/null || true
+
+          # Upload via actions CLI
+          echo "Uploading coverage-data-${suite}"
+        done
