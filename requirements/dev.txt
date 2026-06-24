@@ -2,7 +2,7 @@
 #    uv export --format requirements.txt --no-hashes --no-install-project --all-extras
 annotated-types==0.7.0
     # via pydantic
-build==1.4.0
+build==1.5.0
     # via torch-spyre
 cfgv==3.5.0
     # via pre-commit
@@ -12,22 +12,22 @@ colorama==0.4.6 ; (os_name != 'nt' and sys_platform == 'win32') or (os_name == '
     # via
     #   build
     #   pytest
-    #   tqdm
 coverage==7.14.3
     # via pytest-cov
-distlib==0.4.0
+distlib==0.4.3
     # via virtualenv
 execnet==2.1.2
     # via pytest-xdist
 expecttest==0.3.0
     # via torch-spyre
-filelock==3.24.3
+filelock==3.29.4
     # via
+    #   python-discovery
     #   torch
     #   virtualenv
-fsspec==2026.2.0
+fsspec==2026.6.0
     # via torch
-identify==2.6.16
+identify==2.6.19
     # via pre-commit
 iniconfig==2.3.0
     # via pytest
@@ -49,30 +49,34 @@ ninja==1.13.0
     # via torch-spyre
 nodeenv==1.10.0
     # via pre-commit
-numpy==2.4.2
+numpy==2.4.6 ; python_full_version < '3.12'
     # via torch-spyre
-packaging==26.0
+numpy==2.5.0 ; python_full_version >= '3.12'
+    # via torch-spyre
+packaging==26.2
     # via
     #   build
     #   pytest
     #   wheel
-platformdirs==4.9.2
-    # via virtualenv
+platformdirs==4.10.0
+    # via
+    #   python-discovery
+    #   virtualenv
 pluggy==1.6.0
     # via pytest
 pre-commit==4.5.1
     # via torch-spyre
 psutil==7.2.2
     # via torch-spyre
-pydantic==2.12.5
+pydantic==2.13.4
     # via torch-spyre
-pydantic-core==2.41.5
+pydantic-core==2.46.4
     # via pydantic
-pygments==2.19.2
+pygments==2.20.0
     # via pytest
 pyproject-hooks==1.2.0
     # via build
-pytest==9.0.2
+pytest==9.0.3
     # via
     #   pytest-cov
     #   pytest-xdist
@@ -81,11 +85,13 @@ pytest-cov==6.0.0
     # via torch-spyre
 pytest-xdist==3.8.0
     # via torch-spyre
+python-discovery==1.4.2
+    # via virtualenv
 pyyaml==6.0.3
     # via
     #   pre-commit
     #   torch-spyre
-regex==2026.2.19
+regex==2026.5.9
     # via torch-spyre
 setuptools==79.0.1
     # via
@@ -93,15 +99,13 @@ setuptools==79.0.1
     #   torch-spyre
 sympy==1.14.0
     # via torch
-tokenizers==0.22.2
-    # via transformers
 tomli==2.4.1 ; python_full_version <= '3.11'
     # via coverage
 torch==2.11.0 ; sys_platform == 'darwin'
     # via torch-spyre
 torch==2.11.0+cpu ; sys_platform != 'darwin'
     # via torch-spyre
-types-pyyaml==6.0.12.20250915
+types-pyyaml==6.0.12.20260518
     # via torch-spyre
 typing-extensions==4.15.0
     # via
@@ -112,9 +116,9 @@ typing-extensions==4.15.0
     #   typing-inspection
 typing-inspection==0.4.2
     # via pydantic
-uv==0.10.5
+uv==0.10.12
     # via torch-spyre
-virtualenv==20.39.0
+virtualenv==21.5.1
     # via pre-commit
-wheel==0.46.3
+wheel==0.47.0
     # via torch-spyre
