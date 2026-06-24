@@ -279,6 +279,7 @@ jobs:
           if ! uv pip show pytest-cov > /dev/null 2>&1; then
               echo "pytest-cov is missing! Installing now..."
               uv pip install pytest-cov
+          fi
 
           CONFIG_PATH="tests/configs/${{ matrix.suite.config }}"
           echo "Attempting to run tests with config: $CONFIG_PATH"
