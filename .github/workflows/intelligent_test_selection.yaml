@@ -276,13 +276,12 @@ jobs:
           ls -al
           source .venv/bin/activate
 
-          uv pip list | grep pytest-cov
-          
-          # Force-install the coverage plugin to guarantee it exists in CI
-          uv pip install pytest-cov
-          
-          # Verify it's installed for the logs
-          uv pip list | grep pytest-cov
+          if ! uv pip show pytest-cov > /dev/null 2>&1; then
+              echo "pytest-cov is missing! Installing now..."
+              uv pip install pytest-cov
+          else
+              echo "pytest-cov is already installed. Skipping installation."
+          fi
 
           SUITE_DIR=$(python3 -c "
           import pathlib
