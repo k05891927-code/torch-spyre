@@ -281,30 +281,30 @@ reupload_old_coverage:
         merge-multiple: false
 
     - name: Download old coverage from previous run
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
-            TARGET_REPO="torch-spyre/torch-spyre"
-            TARGET_SHA="${{ github.event.before }}"
-          else
-            TARGET_REPO="${{ github.repository }}"
-            TARGET_SHA="${{ github.event.before }}"
-          fi
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        if [[ "${{ github.event_name }}" == "pull_request" ]]; then
+          TARGET_REPO="torch-spyre/torch-spyre"
+          TARGET_SHA="${{ github.event.before }}"
+        else
+          TARGET_REPO="${{ github.repository }}"
+          TARGET_SHA="${{ github.event.before }}"
+        fi
 
-          RUN_ID=$(gh run list \
-            --repo "$TARGET_REPO" \
-            --workflow "intelligent_test_selection.yaml" \
-            --json databaseId,headSha \
-            --jq ".[] | select(.headSha==\"$TARGET_SHA\") | .databaseId" \
-            | head -n1)
+        RUN_ID=$(gh run list \
+          --repo "$TARGET_REPO" \
+          --workflow "intelligent_test_selection.yaml" \
+          --json databaseId,headSha \
+          --jq ".[] | select(.headSha==\"$TARGET_SHA\") | .databaseId" \
+          | head -n1)
 
-          if [[ -n "$RUN_ID" ]]; then
-            gh run download "$RUN_ID" --repo "$TARGET_REPO" -D old_coverage
-            echo "RUN_ID=$RUN_ID" >> "$GITHUB_ENV"
-          else
-            echo "No previous run found, nothing to re-upload"
-          fi
+        if [[ -n "$RUN_ID" ]]; then
+          gh run download "$RUN_ID" --repo "$TARGET_REPO" -D old_coverage
+          echo "RUN_ID=$RUN_ID" >> "$GITHUB_ENV"
+        else
+          echo "No previous run found, nothing to re-upload"
+        fi
 
     - name: Re-upload missing suites individually
       if: env.RUN_ID != ''
