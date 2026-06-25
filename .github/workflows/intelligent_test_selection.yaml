@@ -339,7 +339,7 @@ jobs:
             echo "Staging missing: $suite"
             mkdir -p "staged/${suite}"
             cp -r "$d/." "staged/${suite}/"
-            MISSING_JSON=$(echo "$MISSING_JSON" | jq --arg s "$suite" '. += [$s]')
+            MISSING_JSON=$(echo "$MISSING_JSON" | jq -c --arg s "$suite" '. += [$s]')
           done
 
           echo "Missing suites: $MISSING_JSON"
