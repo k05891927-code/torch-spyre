@@ -23,7 +23,7 @@ def get_all_source_files(source_path: Path, base_dir: Path) -> Set[str]:
 def main():
     repo_root = get_repo_root()
     source_dir = repo_root / "torch_spyre"
-    coverage_dir = repo_root / "coverage"
+    coverage_dir = repo_root / "old_coverage"
     output_dir = repo_root / "mappings"
     output_file = output_dir / "source_to_suite.json"
 
