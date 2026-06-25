@@ -94,7 +94,7 @@ jobs:
           mkdir -p coverage
           if [[ -n "$RUN_ID" ]]; then
             if gh run download "$RUN_ID" --repo "$TARGET_REPO"  -D old_coverage; then
-              echo "is_first_run=false" >> "$GITHUB_OUTPUT"
+              echo "is_first_run=true" >> "$GITHUB_OUTPUT"
               
               echo "DOWNLOAD SUCCESSFUL: Listing old_coverage/ folder"
               ls -al old_coverage
@@ -356,6 +356,10 @@ jobs:
 
         - name: Upload each missing suite as separate artifact
           if: env.HAS_MISSING == 'true'
+          env:
+            ACTIONS_RUNTIME_TOKEN: ${{ env.ACTIONS_RUNTIME_TOKEN }}
+            ACTIONS_RUNTIME_URL: ${{ env.ACTIONS_RUNTIME_URL }}
+            GITHUB_RUN_ID: ${{ github.run_id }}
           run: |
             node - <<'EOF'
             const artifact = require('@actions/artifact');
@@ -381,8 +385,6 @@ jobs:
               );
 
               for (const suite of suiteDirs) {
-                // artifact name matches Upload segment pattern: {suite.name}_config
-                // suite is already e.g. "test_cache_config"
                 const artifactName = suite;
                 const suiteDir = path.join(reuploadDir, suite);
                 const files = await walk(suiteDir);
