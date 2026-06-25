@@ -257,7 +257,6 @@ jobs:
           ")_config
           
           mkdir -p "coverage/$SUITE_DIR"
-
           bash tests/run_test.sh "tests/configs/${{ matrix.suite.config }}" -v \
             --cov=torch_spyre \
             --cov-report=json:/home/senuser/torch-spyre/coverage/$SUITE_DIR/coverage.json
@@ -270,6 +269,7 @@ jobs:
           name: ${{ matrix.suite.name }}_config
           path: /home/senuser/torch-spyre/coverage/
           retention-days: 1
+          if-no-files-found: ignore
 
 
   reupload_old_coverage:
@@ -320,10 +320,10 @@ jobs:
         if: env.RUN_ID != ''
         run: |
           RAN=()
-          for d in new_coverage/*/; do
-            [[ -d "$d" ]] || continue
-            RAN+=("$(basename "$d")")
-          done
+          # for d in new_coverage/*/; do
+          #   [[ -d "$d" ]] || continue
+          #   RAN+=("$(basename "$d")")
+          # done
           echo "Ran this time: ${RAN[*]}"
 
           MISSING_JSON="[]"
