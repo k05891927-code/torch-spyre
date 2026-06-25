@@ -59,7 +59,7 @@ def main():
     print(f"Scanning coverage logs across {len(suites)} suite directory metrics...")
 
     for suite in sorted(suites):
-        json_file = coverage_dir / suite / "coverage.json"
+        json_file = coverage_dir / suite / suite / "coverage.json"
         if not json_file.exists():
             continue
 
