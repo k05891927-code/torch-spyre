@@ -96,6 +96,7 @@ jobs:
               
               echo "DOWNLOAD SUCCESSFUL: Listing old_coverage/ folder"
               ls -al old_coverage
+              pwd
 
             else
               echo "is_first_run=true" >> "$GITHUB_OUTPUT"
