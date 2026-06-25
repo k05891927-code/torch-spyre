@@ -94,7 +94,7 @@ jobs:
           mkdir -p coverage
           if [[ -n "$RUN_ID" ]]; then
             if gh run download "$RUN_ID" --repo "$TARGET_REPO"  -D old_coverage; then
-              echo "is_first_run=true" >> "$GITHUB_OUTPUT"
+              echo "is_first_run=false" >> "$GITHUB_OUTPUT"
               
               echo "DOWNLOAD SUCCESSFUL: Listing old_coverage/ folder"
               ls -al old_coverage
@@ -273,132 +273,113 @@ jobs:
 
 
   reupload_old_coverage:
-      name: Re-upload Untouched Coverage Suites
-      needs: [select_suites, run_suites]
-      if: always() && needs.select_suites.outputs.is_first_run == 'false'
-      runs-on: ubuntu-latest
-      steps:
+    name: Re-upload Untouched Coverage Suites
+    needs: [select_suites, run_suites]
+    if: always() && needs.select_suites.outputs.is_first_run == 'false'
+    runs-on: ubuntu-latest
+    outputs:
+      missing_suites: ${{ steps.compute_missing.outputs.missing_suites }}
+      has_missing: ${{ steps.compute_missing.outputs.has_missing }}
+    steps:
 
-        - name: Download this run's fresh coverage artifacts
-          uses: actions/download-artifact@v4
-          with:
-            pattern: "*_config"        # matches test_cache_config, test_allocator_e2e_config etc
-            path: new_coverage
-            merge-multiple: false
+      - name: Download this run's fresh coverage artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: "*_config"
+          path: new_coverage
+          merge-multiple: false
 
-        - name: Download old coverage from previous run
-          env:
-            GH_TOKEN: ${{ github.token }}
-          run: |
-            if [[ "${{ github.event_name }}" == "pull_request" ]]; then
-              TARGET_REPO="torch-spyre/torch-spyre"
-              TARGET_SHA="${{ github.event.before }}"
-            else
-              TARGET_REPO="${{ github.repository }}"
-              TARGET_SHA="${{ github.event.before }}"
+      - name: Download old coverage from previous run
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
+            TARGET_REPO="torch-spyre/torch-spyre"
+            TARGET_SHA="${{ github.event.before }}"
+          else
+            TARGET_REPO="${{ github.repository }}"
+            TARGET_SHA="${{ github.event.before }}"
+          fi
+
+          RUN_ID=$(gh run list \
+            --repo "$TARGET_REPO" \
+            --workflow "intelligent_test_selection.yaml" \
+            --json databaseId,headSha \
+            --jq ".[] | select(.headSha==\"$TARGET_SHA\") | .databaseId" \
+            | head -n1)
+
+          if [[ -n "$RUN_ID" ]]; then
+            gh run download "$RUN_ID" --repo "$TARGET_REPO" -D old_coverage
+            echo "RUN_ID=$RUN_ID" >> "$GITHUB_ENV"
+          else
+            echo "No previous run found"
+          fi
+
+      - name: Compute missing suites and stage files
+        id: compute_missing
+        if: env.RUN_ID != ''
+        run: |
+          RAN=()
+          for d in new_coverage/*/; do
+            [[ -d "$d" ]] || continue
+            RAN+=("$(basename "$d")")
+          done
+          echo "Ran this time: ${RAN[*]}"
+
+          MISSING_JSON="[]"
+          for d in old_coverage/*/; do
+            [[ -d "$d" ]] || continue
+            suite=$(basename "$d")
+
+            if [[ " ${RAN[*]} " =~ " ${suite} " ]]; then
+              echo "Skipping $suite (ran fresh)"
+              continue
             fi
 
-            RUN_ID=$(gh run list \
-              --repo "$TARGET_REPO" \
-              --workflow "intelligent_test_selection.yaml" \
-              --json databaseId,headSha \
-              --jq ".[] | select(.headSha==\"$TARGET_SHA\") | .databaseId" \
-              | head -n1)
+            echo "Staging missing: $suite"
+            mkdir -p "staged/${suite}"
+            cp -r "$d/." "staged/${suite}/"
+            MISSING_JSON=$(echo "$MISSING_JSON" | jq --arg s "$suite" '. += [$s]')
+          done
 
-            if [[ -n "$RUN_ID" ]]; then
-              gh run download "$RUN_ID" --repo "$TARGET_REPO" -D old_coverage
-              echo "RUN_ID=$RUN_ID" >> "$GITHUB_ENV"
-            else
-              echo "No previous run found, nothing to re-upload"
-            fi
+          echo "Missing suites: $MISSING_JSON"
+          echo "missing_suites=$MISSING_JSON" >> "$GITHUB_OUTPUT"
 
-        - name: Setup Node for artifact uploads
-          if: env.RUN_ID != ''
-          uses: actions/setup-node@v4
-          with:
-            node-version: '20'
+          if [[ "$MISSING_JSON" == "[]" ]]; then
+            echo "has_missing=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_missing=true" >> "$GITHUB_OUTPUT"
+          fi
 
-        - name: Install artifact SDK
-          if: env.RUN_ID != ''
-          run: npm install @actions/artifact@2
+      - name: Upload staged files as passthrough artifact
+        if: steps.compute_missing.outputs.has_missing == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: staged-missing-suites
+          path: staged/
+          retention-days: 1
 
-        - name: Re-upload missing suites individually
-          if: env.RUN_ID != ''
-          run: |
-            # Build list of suite names that ran this time
-            # new_coverage/ contains: test_cache_config/, test_allocator_e2e_config/ etc
-            RAN=()
-            for d in new_coverage/*/; do
-              [[ -d "$d" ]] || continue
-              suite=$(basename "$d")   # e.g. test_cache_config
-              RAN+=("$suite")
-            done
-            echo "Suites ran this time: ${RAN[*]}"
 
-            # Find old suites not in this run, stage them
-            HAS_MISSING=false
-            for d in old_coverage/*/; do
-              [[ -d "$d" ]] || continue
-              suite=$(basename "$d")   # e.g. test_cache_config
+  reupload_matrix:
+    name: Reupload ${{ matrix.suite }}
+    needs: reupload_old_coverage
+    if: always() && needs.reupload_old_coverage.outputs.has_missing == 'true'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        suite: ${{ fromJson(needs.reupload_old_coverage.outputs.missing_suites) }}
+    steps:
 
-              if [[ " ${RAN[*]} " =~ " ${suite} " ]]; then
-                echo "Skipping $suite (ran this time, already uploaded fresh)"
-                continue
-              fi
+      - name: Download staged missing suites
+        uses: actions/download-artifact@v4
+        with:
+          name: staged-missing-suites
+          path: staged
 
-              echo "Staging missing suite: $suite"
-              mkdir -p "reupload/${suite}"
-              cp -r "$d/." "reupload/${suite}/"
-              HAS_MISSING=true
-            done
-
-            echo "HAS_MISSING=$HAS_MISSING" >> "$GITHUB_ENV"
-
-        - name: Upload each missing suite as separate artifact
-          if: env.HAS_MISSING == 'true'
-          env:
-            ACTIONS_RUNTIME_TOKEN: ${{ env.ACTIONS_RUNTIME_TOKEN }}
-            ACTIONS_RUNTIME_URL: ${{ env.ACTIONS_RUNTIME_URL }}
-            GITHUB_RUN_ID: ${{ github.run_id }}
-          run: |
-            node - <<'EOF'
-            const artifact = require('@actions/artifact');
-            const fs = require('fs');
-            const path = require('path');
-
-            async function walk(dir) {
-              let files = [];
-              for (const f of fs.readdirSync(dir)) {
-                const full = path.join(dir, f);
-                if (fs.statSync(full).isDirectory()) files = files.concat(await walk(full));
-                else files.push(full);
-              }
-              return files;
-            }
-
-            async function main() {
-              const client = new artifact.DefaultArtifactClient();
-              const reuploadDir = 'reupload';
-
-              const suiteDirs = fs.readdirSync(reuploadDir).filter(d =>
-                fs.statSync(path.join(reuploadDir, d)).isDirectory()
-              );
-
-              for (const suite of suiteDirs) {
-                const artifactName = suite;
-                const suiteDir = path.join(reuploadDir, suite);
-                const files = await walk(suiteDir);
-
-                console.log(`Uploading artifact: ${artifactName}`);
-                console.log(`  Files: ${files}`);
-
-                await client.uploadArtifact(artifactName, files, suiteDir, {
-                  retentionDays: 1
-                });
-
-                console.log(`Done: ${artifactName}`);
-              }
-            }
-
-            main().catch(e => { console.error(e); process.exit(1); });
-            EOF
+      - name: Upload ${{ matrix.suite }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.suite }}
+          path: staged/${{ matrix.suite }}/
+          retention-days: 1
