@@ -109,28 +109,6 @@
 #             echo "code_changed=true" >> "$GITHUB_OUTPUT"
 #           fi
 
-#   # ---------------------------------------------------------------------------
-#   # Job 2: delegate to the shared test matrix
-#   #
-#   # Only runs when `changes.code_changed == 'true'`. For docs-only PRs the
-#   # reusable workflow is never invoked — no hardware runners are consumed.
-#   # ---------------------------------------------------------------------------
-#   run-tests:
-#     needs: changes
-#     if: needs.changes.outputs.code_changed == 'true'
-#     uses: ./.github/workflows/_test_matrix.yaml
-#     with:
-#       runner_label: linux
-#       # Per-PR ephemeral image label when provided, else the standing set.
-#       image_label: ${{ inputs.runner_label || 'image_spyre_backend' }}
-#       extra_test_flags: -v -m "not xfail"
-#       extra_test_flags_multi_spyre: -v
-#       checkout_pytorch: false
-#       ref: ${{ inputs.ref || '' }}
-#       repository: ${{ inputs.repository || '' }}
-#       rpm_location: ${{ inputs.rpm_location || '' }}
-#       rpm_names: ${{ inputs.rpm_names || '' }}
-#       build_torch_spyre: ${{ inputs.build_torch_spyre == true }}
 
 #   # ---------------------------------------------------------------------------
 #   # Job 3: run-spyre-unit-tests (required check gate)
