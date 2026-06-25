@@ -93,19 +93,23 @@ def main():
 
         # Rule Category B: Test Script Mutations
         elif file_path.startswith("tests/") and file_path.endswith(".py"):
-            if file_path in test_to_suite:
-                suites_to_run.update(test_to_suite[file_path])
-                tag = "[NEW TEST]" if is_added else "[MODIFIED TEST]"
+            if is_added:
                 reasons.append(
-                    f"{tag} {file_path} -> runs mapped suites: {test_to_suite[file_path]}"
+                    f"[NEW TEST] {file_path} -> no action (add a suite config to activate)"
                 )
+            elif file_path in test_to_suite:
+                suites_to_run.update(test_to_suite[file_path])
+                reasons.append(
+                    f"[MODIFIED TEST] {file_path} -> runs mapped suites: {test_to_suite[file_path]}"
+                )
+
 
         # Rule Category C: Core Framework Source Mutations
         elif file_path.startswith("torch_spyre/") and file_path.endswith(".py"):
             if is_added:
                 has_new_source_file = True
                 reasons.append(
-                    f"[NEW SOURCE FILE DETECTED] {file_path} -> triggering ALL matrix suites"
+                    f"[NEW SOURCE FILE -DANGLING] {file_path} -> triggering ALL matrix suites"
                 )
             else:
                 mapped_suite_names = source_to_suite.get(file_path, [])

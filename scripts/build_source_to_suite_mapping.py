@@ -28,14 +28,6 @@ def main():
     print("coverage_dir ", coverage_dir)
     print("contents (os.coverage_dir):")
     print(os.listdir(coverage_dir))
-    json_files = list(coverage_dir.rglob("*.json"))
-    if json_files:
-        print(f"Found {len(json_files)} .json file(s):")
-        for json_path in json_files:
-            # json_path is an absolute Path object
-            print(f" - {json_path}") 
-    else:
-        print("No .json files found.")
 
     output_dir = repo_root / "mappings"
     output_file = output_dir / "source_to_suite.json"
