@@ -120,7 +120,7 @@ jobs:
       #===========
 
       - name: Gather Precise File Mutation Deltas
-        if: steps.check_coverage.outputs.is_first_run == 'false'
+        if: steps.check_coverage.outputs.is_first_run == 'true'
         id: git_diff
         run: |
           if [[ "${{ github.event_name }}" == "pull_request" ]]; then
