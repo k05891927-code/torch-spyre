@@ -112,6 +112,7 @@ jobs:
 
       # MAPPING COMPILATION BLOCK =======
       - name: Rebuild Source-To-Suite Mapping File (Step B & C)
+        if: steps.check_coverage.outputs.is_first_run == 'false'
         run: python3 scripts/build_source_to_suite_mapping.py
 
       - name: Rebuild Test-To-Suite Config Mapping File
