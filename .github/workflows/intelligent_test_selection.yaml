@@ -92,7 +92,7 @@ jobs:
 
           if [[ -n "$RUN_ID" ]]; then
             if gh run download "$RUN_ID" --repo "$TARGET_REPO"  -D old_coverage; then
-              echo "is_first_run=true" >> "$GITHUB_OUTPUT"
+              echo "is_first_run=false" >> "$GITHUB_OUTPUT"
               
               echo "DOWNLOAD SUCCESSFUL: Listing old_coverage/ folder"
               ls -al old_coverage
@@ -120,7 +120,7 @@ jobs:
       #===========
 
       - name: Gather Precise File Mutation Deltas
-        if: steps.check_coverage.outputs.is_first_run == 'true'
+        if: steps.check_coverage.outputs.is_first_run == 'false'
         id: git_diff
         run: |
           if [[ "${{ github.event_name }}" == "pull_request" ]]; then
