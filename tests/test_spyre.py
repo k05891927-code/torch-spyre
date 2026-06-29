@@ -32,6 +32,7 @@ from torch.testing._internal.common_utils import (
     TestCase,
 )
 
+
 # 0-dim scalar roundtrip: shared dtype × factory lambdas (used by parametrized fill test).
 _SCALAR_ROUNDTRIP_DTYPE_CASES = [
     (torch.int8, lambda fn: fn((), dtype=torch.float32).to(dtype=torch.int8)),
