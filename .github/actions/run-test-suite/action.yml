@@ -54,11 +54,16 @@ inputs:
       Leave empty to skip coverage entirely.
     required: false
     default: ''
+outputs:
+  suite_dir:
+    description: Sanitized suite directory name derived from the config path (e.g. test_padding_config)
+    value: ${{ steps.run_suite.outputs.suite_dir }}
 
 runs:
   using: composite
   steps:
     - name: Run ${{ inputs.suite_name }}
+      id: run_suite
       shell: bash
       env:
         TORCH_SPYRE_DIR: ${{ inputs.torch_spyre_dir }}
@@ -80,18 +85,19 @@ runs:
 
         CONFIG="${{ inputs.config }}"
 
+        SUITE_DIR=$(python3 -c "
+        import pathlib
+        p = pathlib.Path('${CONFIG}')
+        print(p.stem[:-7] if p.stem.endswith('_config') else p.stem)
+        ")_config
+        echo "suite_dir=$SUITE_DIR" >> "$GITHUB_OUTPUT"
+
         _COV_FLAGS=""
         if [[ -n "${{ inputs.coverage_dir }}" ]]; then
           if ! uv pip show pytest-cov > /dev/null 2>&1; then
             echo "pytest-cov is missing! Installing now..."
             uv pip install pytest-cov
           fi
-
-          SUITE_DIR=$(python3 -c "
-        import pathlib
-        p = pathlib.Path('${CONFIG}')
-        print(p.stem[:-7] if p.stem.endswith('_config') else p.stem)
-        ")_config
 
           mkdir -p "${{ inputs.coverage_dir }}/$SUITE_DIR"
           _COV_FLAGS="--cov=torch_spyre --cov-report=json:${{ inputs.coverage_dir }}/$SUITE_DIR/coverage.json"
