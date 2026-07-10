@@ -190,6 +190,7 @@ jobs:
           extra_test_flags: ${{ inputs.extra_test_flags }}
           junit_xml_path: ${{ env.REPORT_PATH }}
           report_name: ${{ env.REPORT_NAME }}
+          coverage_dir: ${{ github.workspace }}/torch-spyre/coverage
           pre_run: |
             # Clear the cached AIU setup guard and stale topo.json so
             # ibm-aiu-setup.sh re-discovers all cards on the x4 runner.
@@ -205,6 +206,15 @@ jobs:
           path: ${{ env.REPORT_PATH }}
           if-no-files-found: warn
           retention-days: 10
+
+      - name: Upload coverage segment
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: ${{ matrix.suite.name }}_config
+          path: ${{ github.workspace }}/torch-spyre/coverage/
+          retention-days: 1
+          if-no-files-found: ignore
 
   # ---------------------------------------------------------------------------
   # Job 2: Multi-Spyre test matrix
@@ -287,11 +297,11 @@ jobs:
           parallel: 'false'
           junit_xml_path: ${{ env.REPORT_PATH }}
           report_name: ${{ env.REPORT_NAME }}
+          coverage_dir: ${{ github.workspace }}/torch-spyre/coverage
           pre_run: |
             # Multi-Spyre tests require a fresh topology probe: clear the
             # cached AIU setup guard and the stale topo.json so
             # ibm-aiu-setup.sh re-discovers all attached cards.
-
             unset _IBM_AIU_SETUP
             rm -rf /tmp/etc/ibm/spyre/topo.json
             source /etc/profile.d/ibm-aiu-setup.sh
@@ -304,6 +314,15 @@ jobs:
           path: ${{ env.REPORT_PATH }}
           if-no-files-found: warn
           retention-days: 10
+
+      - name: Upload coverage segment
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: ${{ matrix.suite.name }}_config
+          path: ${{ github.workspace }}/torch-spyre/coverage/
+          retention-days: 1
+          if-no-files-found: ignore
 
   # ---------------------------------------------------------------------------
   # Job 3: Report test suites that ran zero tests
