@@ -211,3 +211,44 @@ def find_unimplemented(specs: list) -> UnimplementedOp | None:
             if found is not None:
                 return found
     return None
+
+
+def format_op_spec_list(specs: list, indent: int = 0) -> str:
+    """Format an op spec list for structured logging output."""
+    lines = []
+    prefix = "  " * indent
+    for item in specs:
+        if isinstance(item, LoopSpec):
+            lines.append(f"{prefix}LoopSpec(count={item.count})")
+            lines.append(f"{prefix}  body=[")
+            lines.append(format_op_spec_list(item.body, indent + 2))
+            lines.append(f"{prefix}  ]")
+        elif isinstance(item, OpSpec):
+            it_space_str = ", ".join(
+                f"{k}: ({v[0]}, {v[1]})" for k, v in item.iteration_space.items()
+            )
+            lines.append(
+                f"{prefix}OpSpec(op={item.op!r}, "
+                f"is_reduction={item.is_reduction}, "
+                f"iteration_space={{{it_space_str}}})"
+            )
+            for arg in item.args:
+                lines.append(
+                    f"{prefix}  TensorArg("
+                    f"{'input' if arg.is_input else 'output'}, "
+                    f"arg_index={arg.arg_index}, "
+                    f"device_size={arg.device_size}, "
+                    f"device_coordinates={arg.device_coordinates}, "
+                    f"allocation={arg.allocation})"
+                )
+            if item.tiled_symbols:
+                lines.append(f"{prefix}  tiled_symbols={item.tiled_symbols}")
+            if item.symbolic_dim_bounds:
+                lines.append(
+                    f"{prefix}  symbolic_dim_bounds={item.symbolic_dim_bounds}"
+                )
+        elif isinstance(item, UnimplementedOp):
+            lines.append(f"{prefix}UnimplementedOp(op={item.op!r})")
+        else:
+            lines.append(f"{prefix}{item!r}")
+    return "\n".join(lines)

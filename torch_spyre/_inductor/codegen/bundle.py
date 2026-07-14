@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import json
+import logging
 import os
 from collections.abc import Sequence
 from typing import Any
@@ -23,7 +24,7 @@ from torch_spyre._inductor import config as _spyre_config
 from torch_spyre._inductor.codegen.compute_ops import SymbolKind
 from torch_spyre._inductor.codegen.superdsc import compile_op_spec
 from torch_spyre._inductor.codegen.unroll import unroll_loop_specs
-from torch_spyre._inductor.op_spec import LoopSpec, OpSpec
+from torch_spyre._inductor.op_spec import LoopSpec, OpSpec, format_op_spec_list
 from torch_spyre._inductor.logging_utils import get_inductor_logger
 
 
@@ -87,6 +88,13 @@ def generate_bundle(
         unroll_loops = _spyre_config.unroll_loops
 
     specs_list: list = unroll_loop_specs(list(specs)) if unroll_loops else list(specs)
+
+    if logger.isEnabledFor(logging.INFO):
+        logger.info(
+            "OP SPECS AFTER %s\n%s",
+            "UNROLLING" if unroll_loops else "LOOP-PASS-THROUGH (no unroll)",
+            format_op_spec_list(specs_list),
+        )
 
     # -----------------------------------------------------------------------
     # Pass 1: compile all OpSpecs depth-first.
