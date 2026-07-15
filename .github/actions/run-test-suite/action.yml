@@ -47,11 +47,24 @@ inputs:
     description: Whether to pass --parallel to run_test.sh (disable for distributed torchrun tests)
     required: false
     default: 'true'
+  coverage_dir:
+    description: >
+      If set, installs pytest-cov (if missing) and writes
+      coverage/<suite>_config/coverage.json under this directory.
+      Leave empty to skip coverage entirely.
+    required: false
+    default: ''
+
+outputs:
+  suite_dir:
+    description: Sanitized suite directory name derived from the config path (e.g. test_padding_config)
+    value: ${{ steps.run_suite.outputs.suite_dir }}
 
 runs:
   using: composite
   steps:
     - name: Run ${{ inputs.suite_name }}
+      id: run_suite
       shell: bash
       env:
         TORCH_SPYRE_DIR: ${{ inputs.torch_spyre_dir }}
@@ -72,6 +85,27 @@ runs:
         source .venv/bin/activate
 
         CONFIG="${{ inputs.config }}"
+
+        SUITE_DIR=$(python3 -c "
+        import pathlib
+        print(pathlib.Path('${CONFIG}').stem)
+        ")
+        echo "suite_dir=$SUITE_DIR" >> "$GITHUB_OUTPUT"
+
+        _COV_FLAGS=""
+        COV_FILE=""
+        if [[ -n "${{ inputs.coverage_dir }}" ]]; then
+          if ! uv pip show pytest-cov > /dev/null 2>&1; then
+            echo "pytest-cov is missing! Installing now..."
+            uv pip install pytest-cov
+          fi
+
+          mkdir -p "${{ inputs.coverage_dir }}/$SUITE_DIR"
+          COV_FILE="${{ inputs.coverage_dir }}/$SUITE_DIR/coverage.json"
+          _COV_FLAGS="--cov=torch_spyre --cov-report=json:${COV_FILE}"
+          echo "  Coverage      : enabled -> ${COV_FILE}"
+        fi
+        
 
         _ARCH="$(uname -m)"
         _SLOW_FLAG=""
@@ -98,14 +132,15 @@ runs:
                 elapsed_stall=$(( elapsed_stall + STALL_CHECK_INTERVAL ))
                 echo "[stall-watcher] No new output for ${elapsed_stall}s (lines=${current_lines})"
                 if [[ $elapsed_stall -ge $STALL_TIMEOUT_SECS ]]; then
-                  echo "[stall-watcher] STALL DETECTED — killing test child processes"
-                  # Kill the parent and ALL child processes in order
-                  # 1. Freeze the parent process so it cannot spawn anything
-                  kill -STOP "$TEST_PID" || true
-                  # 2. Kill all existing child processes
-                  pkill -P "$TEST_PID" || true
-                  # 3. Kill the frozen parent process
-                  kill -KILL "$TEST_PID" || true
+                  echo "[stall-watcher] STALL DETECTED — attempting graceful shutdown first"
+                  kill -TERM "$TEST_PID" 2>/dev/null || true
+                  sleep 10
+                  if kill -0 "$TEST_PID" 2>/dev/null; then
+                    echo "[stall-watcher] Still alive after SIGTERM — force killing"
+                    kill -STOP "$TEST_PID" || true
+                    pkill -P "$TEST_PID" || true
+                    kill -KILL "$TEST_PID" || true
+                  fi
                   return
                 fi
               else
@@ -153,7 +188,7 @@ runs:
             _PARALLEL_FLAG="--parallel"
           fi
 
-          env ${_DTLOG_PREFIX} bash tests/run_test.sh "$CONFIG" ${_PARALLEL_FLAG} ${{ inputs.extra_test_flags }} ${_SLOW_FLAG} ${_JUNIT_FLAG} \
+          env ${_DTLOG_PREFIX} bash tests/run_test.sh "$CONFIG" ${_PARALLEL_FLAG} ${{ inputs.extra_test_flags }} ${_SLOW_FLAG} ${_JUNIT_FLAG} ${_COV_FLAGS} \
             >&"$FIFO_FD" 2>&1 &
           TEST_PID=$!
 
@@ -190,6 +225,9 @@ runs:
           rm -f "$LOG_FILE" "$STALL_FLAG" "${STALL_FLAG}.done"
           [[ $attempt -lt $MAX_ATTEMPTS ]] && sleep 10
         done
+ 
 
         echo "=== All ${MAX_ATTEMPTS} attempts failed for ${{ inputs.suite_name }} ==="
         exit 1
+
+

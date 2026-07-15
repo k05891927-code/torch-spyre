@@ -313,6 +313,7 @@ jobs:
           extra_test_flags: ${{ inputs.extra_test_flags }}
           junit_xml_path: ${{ env.REPORT_PATH }}
           report_name: ${{ env.REPORT_NAME }}
+          coverage_dir: ${{ inputs.prebaked_image && format('{0}/coverage', env.PREBAKED_TORCH_SPYRE_DIR) || format('{0}/torch-spyre/coverage', github.workspace) }}
           pre_run: |
             # Clear the cached AIU setup guard and stale topo.json so
             # ibm-aiu-setup.sh re-discovers all cards on the x4 runner.
@@ -328,6 +329,15 @@ jobs:
           path: ${{ env.REPORT_PATH }}
           if-no-files-found: warn
           retention-days: 10
+
+      - name: Upload coverage segment
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: ${{ steps.run_tests.outputs.suite_dir }}
+          path: ${{ inputs.prebaked_image && format('{0}/coverage', env.PREBAKED_TORCH_SPYRE_DIR) || format('{0}/torch-spyre/coverage', github.workspace) }}
+          retention-days: 1
+          if-no-files-found: warn
 
   # ---------------------------------------------------------------------------
   # Job 2: Multi-Spyre test matrix
