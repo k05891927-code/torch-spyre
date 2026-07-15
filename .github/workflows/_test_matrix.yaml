@@ -336,7 +336,7 @@ jobs:
         with:
           name: ${{ steps.run_tests.outputs.suite_dir }}
           path: ${{ inputs.prebaked_image && format('{0}/coverage', env.PREBAKED_TORCH_SPYRE_DIR) || format('{0}/torch-spyre/coverage', github.workspace) }}
-          retention-days: 1
+          retention-days: 3
           if-no-files-found: warn
 
   # ---------------------------------------------------------------------------
