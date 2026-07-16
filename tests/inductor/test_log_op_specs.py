@@ -212,6 +212,9 @@ class TestSpyreKernelLogging:
                     kernel.op_specs = [_make_add_op()]
                     kernel.indirect_vars = None
                     kernel.indirect_sizes = {}
+                    kernel.args = MagicMock()
+                    kernel.args.python_argdefs.return_value = (None, [])
+                    kernel.spyre_kernel_args = []
 
                     with patch("torch_spyre._inductor.spyre_kernel.simplify_op_spec"):
                         kernel.codegen_kernel()
@@ -234,6 +237,9 @@ class TestSpyreKernelLogging:
                 kernel.op_specs = [_make_add_op()]
                 kernel.indirect_vars = None
                 kernel.indirect_sizes = {}
+                kernel.args = MagicMock()
+                kernel.args.python_argdefs.return_value = (None, [])
+                kernel.spyre_kernel_args = []
 
                 with patch("torch_spyre._inductor.spyre_kernel.simplify_op_spec"):
                     kernel.codegen_kernel()
@@ -259,24 +265,21 @@ class TestBundleLogging:
                 ):
                     with patch(
                         "torch_spyre._inductor.codegen.bundle.compile_op_spec",
-                        return_value=MagicMock(
-                            symbols=[],
-                            json_bytes=b"{}",
-                            binary_bytes=b"",
-                        ),
+                        return_value=({}, [], [], []),
                     ):
-                        from torch_spyre._inductor.codegen.bundle import (
-                            generate_bundle,
-                        )
+                        with patch("builtins.open", MagicMock()):
+                            from torch_spyre._inductor.codegen.bundle import (
+                                generate_bundle,
+                            )
 
-                        op = _make_add_op()
-                        generate_bundle(
-                            kernel_name="test_kernel",
-                            output_dir="/tmp/test",
-                            specs=[op],
-                            use_symbols=False,
-                            unroll_loops=True,
-                        )
+                            op = _make_add_op()
+                            generate_bundle(
+                                kernel_name="test_kernel",
+                                output_dir="/tmp/test",
+                                specs=[op],
+                                use_symbols=False,
+                                unroll_loops=True,
+                            )
 
                 info_calls = mock_info.call_args_list
                 op_spec_calls = [
@@ -293,24 +296,21 @@ class TestBundleLogging:
             with patch.object(logger, "info") as mock_info:
                 with patch(
                     "torch_spyre._inductor.codegen.bundle.compile_op_spec",
-                    return_value=MagicMock(
-                        symbols=[],
-                        json_bytes=b"{}",
-                        binary_bytes=b"",
-                    ),
+                    return_value=({}, [], [], []),
                 ):
-                    from torch_spyre._inductor.codegen.bundle import (
-                        generate_bundle,
-                    )
+                    with patch("builtins.open", MagicMock()):
+                        from torch_spyre._inductor.codegen.bundle import (
+                            generate_bundle,
+                        )
 
-                    op = _make_add_op()
-                    generate_bundle(
-                        kernel_name="test_kernel",
-                        output_dir="/tmp/test",
-                        specs=[op],
-                        use_symbols=False,
-                        unroll_loops=False,
-                    )
+                        op = _make_add_op()
+                        generate_bundle(
+                            kernel_name="test_kernel",
+                            output_dir="/tmp/test",
+                            specs=[op],
+                            use_symbols=False,
+                            unroll_loops=False,
+                        )
 
                 info_calls = mock_info.call_args_list
                 op_spec_calls = [
