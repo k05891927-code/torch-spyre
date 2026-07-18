@@ -81,10 +81,9 @@ def generate_bundle(
     When ``unroll_loops=False``, ``LoopSpec`` entries are passed through intact
     and produce ``scf.for`` loops in the generated ``bundle.mlir``.
 
-    Dimension symbols (from ``mark_dynamic``) are registered by
-    ``compile_op_spec`` regardless of ``use_symbols`` and always produce
-    ``!sdscbundle.input_arg<index, granularity=G, max_value=M>`` function
-    parameters independent of the HBM-address symbolization flag.
+    Dimension symbols (from ``mark_dynamic``) always produce
+    ``!sdscbundle.input_arg<index, granularity=G, max_value=M>`` parameters
+    independent of ``use_symbols``.
     """
     if use_symbols is None:
         use_symbols = _spyre_config.bundle_symbolic_args
@@ -143,15 +142,8 @@ def generate_bundle(
     compiled_iter = iter(compiled)
     addr_counter = [0]
 
-    # Build a per-symbol kind list from compiled entries.  Dimension symbols
-    # (from mark_dynamic) are registered by compile_op_spec regardless of
-    # use_symbols — that flag only controls HBM-address symbolization — so
-    # this list (and the dimension-symbol handling below) is built
-    # unconditionally; it is simply empty when there is nothing to report.
-    # sym_idx_to_dim_origin maps a "dimension" symbol's global sym_idx to
-    # (sdsc_idx, local_dim_ordinal): the SDSC it was first registered in and
-    # its 1-based position among that SDSC's dimension symbols.  Used below
-    # to name the deduplicated function parameter (e.g. "%sym_0_1").
+    # Flatten symbol kinds from all SDSCs. sym_idx_to_dim_origin records
+    # (sdsc_idx, ordinal) for each dimension symbol to generate its MLIR name.
     symbol_kinds: list[SymbolKind] = []
     sym_idx_to_dim_origin: dict[int, tuple[int, int]] = {}
     for sdsc_idx, (_, _, _, local_kinds) in enumerate(compiled):
@@ -191,26 +183,20 @@ def generate_bundle(
         # that call_kernel passes tensors to .run().
         kernel_arg_sym_indices.sort(key=lambda idx: symbol_kinds[idx].arg_index)
 
-    # Indices of dimension symbols (from mark_dynamic) that become input_arg
-    # parameters.  Deduplicated by pytorch_sym: the same dynamic-shape symbol
-    # may be registered independently (with its own local negative ID) by every
-    # SDSC that reads it, so we keep only the first sym_idx per unique
-    # pytorch_sym and map subsequent duplicates to it.  Unlike kernel-arg dedup,
-    # this runs regardless of use_symbols: dynamic shapes are emitted as
-    # input_arg params even when HBM addresses are baked as concrete constants.
+    # Deduplicate dimension symbols by pytorch_sym (same shape var may appear
+    # in every SDSC with a different local ID). Runs regardless of use_symbols.
     dimension_sym_indices: list[int] = []
     dimension_dup_canonical: dict[int, int] = {}  # dup sym_idx → canonical sym_idx
     seen_dim_sym: dict[str, int] = {}  # pytorch_sym → canonical sym_idx
     for i, kind_i in enumerate(symbol_kinds):
         if kind_i.is_dimension:
-            key = kind_i.pytorch_sym
-            if key not in seen_dim_sym:
-                seen_dim_sym[key] = i
+            dim_sym_key = kind_i.pytorch_sym
+            if dim_sym_key not in seen_dim_sym:
+                seen_dim_sym[dim_sym_key] = i
                 dimension_sym_indices.append(i)
             else:
-                dimension_dup_canonical[i] = seen_dim_sym[key]
-    # Canonical parameter name per dimension symbol, e.g. "%sym_0_1" — named
-    # after the (sdsc_idx, local_dim_ordinal) of its first registration.
+                dimension_dup_canonical[i] = seen_dim_sym[dim_sym_key]
+    # MLIR name for each canonical dimension symbol, e.g. "%sym_0_1".
     dim_param_names: dict[int, str] = {
         sym_idx: (
             f"%sym_{sym_idx_to_dim_origin[sym_idx][0]}"
@@ -250,10 +236,10 @@ def generate_bundle(
                 ai = symbol_kinds[sym_idx].arg_index
                 params.append(f"%arg_{ai}_base_addr: !sdscbundle.input_arg<index>")
             for sym_idx in dimension_sym_indices:
-                sk = symbol_kinds[sym_idx]
+                dim_sk = symbol_kinds[sym_idx]
                 params.append(
                     f"{dim_param_names[sym_idx]}_base: !sdscbundle.input_arg<index, "
-                    f"granularity={sk.granularity}, max_value={sk.max_value}>"
+                    f"granularity={dim_sk.granularity}, max_value={dim_sk.max_value}>"
                 )
             f.write(f"\tfunc.func @sdsc_bundle({', '.join(params)}) {{\n")
             if has_pool:
@@ -268,12 +254,12 @@ def generate_bundle(
                     f" %arg_{ai}_base_addr : !sdscbundle.input_arg<index> -> index\n"
                 )
             for sym_idx in dimension_sym_indices:
-                sk = symbol_kinds[sym_idx]
+                dim_sk = symbol_kinds[sym_idx]
                 name = dim_param_names[sym_idx]
                 f.write(
                     f"\t\t{name} = sdscbundle.input_arg_extract value from"
                     f" {name}_base : !sdscbundle.input_arg<index, "
-                    f"granularity={sk.granularity}, max_value={sk.max_value}>"
+                    f"granularity={dim_sk.granularity}, max_value={dim_sk.max_value}>"
                     " -> index\n"
                 )
         else:
@@ -317,8 +303,7 @@ def generate_bundle(
             for dup_idx in kernel_dup_canonical
             if dup_idx in kernel_sym_to_arg_idx
         }
-        # Dimension symbols (canonical + duplicates) resolve directly to their
-        # input_arg_extract result — no addi involved.
+        # Dimension symbols resolve to their input_arg_extract result.
         sym_canonical.update(
             (sym_idx, dim_param_names[sym_idx]) for sym_idx in dimension_sym_indices
         )
@@ -598,9 +583,7 @@ def _emit_specs(
 
     def _resolve_sym(sid: int) -> str:
         # sid is a negative symbol ID; abs(sid)-1 is the 0-based index into symbols[].
-        # kernel_arg_sym_to_name/sym_canonical are empty dicts when their respective
-        # features are inactive, so checking them unconditionally is safe — this
-        # lets dimension-symbol resolution work independent of use_symbols.
+        # Both dicts are safe to check unconditionally — empty when their feature is off.
         sym_idx = abs(sid) - 1
         if sym_idx in kernel_arg_sym_to_name:
             return kernel_arg_sym_to_name[sym_idx]
@@ -692,30 +675,19 @@ def _emit_specs(
             ]
 
             operand_str = ", ".join(operands)
-            # Emit operands/symbol_ids whenever there are symbol IDs to report
-            # (dimension and/or address).  Dimension symbols can be present even
-            # when use_symbols=False (HBM addresses baked as concrete constants).
-            if symbol_ids:
-                symbol_ids_str = ", ".join(str(i) for i in symbol_ids)
-                f.write(
-                    f"{tab}sdscbundle.sdsc_execute ({operand_str}) "
-                    f'{{sdsc_filename="{sdsc_filename}", '
-                    f'"symbol_ids"=[{symbol_ids_str}]}}\n'
-                )
-            else:
-                f.write(
-                    f"{tab}sdscbundle.sdsc_execute () "
-                    f'{{sdsc_filename="{sdsc_filename}"}}\n'
-                )
+            symbol_ids_str = ", ".join(str(i) for i in symbol_ids)
+            f.write(
+                f"{tab}sdscbundle.sdsc_execute ({operand_str}) "
+                f'{{sdsc_filename="{sdsc_filename}", '
+                f'"symbol_ids"=[{symbol_ids_str}]}}\n'
+            )
 
 
 def _extract_symbol_ids(sdsc_json: dict) -> list[int]:
     """Extract all negative symbol IDs from an SDSC JSON, dimension IDs first.
 
-    Dimension symbols (``dimToSymbolMapping_``, registered by mark_dynamic) are
-    always allocated lower-magnitude negative IDs than HBM address symbols (see
-    ``compute_ops.generate_sdsc``), so collecting them first here keeps ``ids``
-    in ascending-magnitude order without needing to sort.
+    Dimension IDs (``dimToSymbolMapping_``) have lower-magnitude negatives than
+    HBM address IDs, so scanning them first keeps ``ids`` sorted naturally.
     """
     ids: list[int] = []
     seen: set[int] = set()

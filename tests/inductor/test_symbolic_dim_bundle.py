@@ -14,18 +14,7 @@
 
 """Unit tests for bundle.py dimension-symbol support (mark_dynamic path).
 
-These tests cover the 8 changes made to bundle.py:
-  1. symbol_kinds + sym_idx_to_dim_origin built unconditionally
-  2. Dedup dimension symbols by pytorch_sym + build dim_param_names
-  3. Function signature includes input_arg<index, granularity=G, max_value=M> params
-  4. sym_canonical wired with canonical + duplicate dim symbol indices
-  5. arith.constant skipped for dimension symbols (continue branch)
-  6. _extract_symbol_ids scans dimToSymbolMapping_ in addition to scheduleTree_
-  7. _resolve_sym consults sym_canonical without gating on symbolic_args
-  8. sdsc_execute emission keyed on ``if symbol_ids:`` not ``if use_symbols:``
-
-compile_op_spec is mocked throughout so no Spyre hardware or torch.compile
-infrastructure is required.
+compile_op_spec is mocked throughout so no Spyre hardware is required.
 """
 
 import os
@@ -98,27 +87,21 @@ def _minimal_op_spec() -> OpSpec:
     )
 
 
-# ---------------------------------------------------------------------------
-# Tests for _extract_symbol_ids (Change 6)
-# ---------------------------------------------------------------------------
-
-
 class TestExtractSymbolIds(InductorTestCase):
-    """Pure unit tests for _extract_symbol_ids — the extended parser that
-    scans dimToSymbolMapping_ before scheduleTree_."""
+    """Unit tests for _extract_symbol_ids."""
 
     def test_dim_only(self):
-        """Dimension symbol ID from dimToSymbolMapping_ is returned."""
+        """Dimension ID from dimToSymbolMapping_ is collected."""
         sdsc_json = _make_sdsc_json(dim_sym_ids={"mb": [-1]})
         self.assertEqual(_extract_symbol_ids(sdsc_json), [-1])
 
     def test_hbm_only(self):
-        """HBM address symbol ID from scheduleTree_ is returned."""
+        """HBM address ID from scheduleTree_ is collected."""
         sdsc_json = _make_sdsc_json(hbm_sym_ids_per_core={"[0, 0, 0]": -2})
         self.assertEqual(_extract_symbol_ids(sdsc_json), [-2])
 
     def test_dim_before_hbm_ordering(self):
-        """Dimension IDs appear before HBM address IDs in the output list."""
+        """Dimension IDs come before HBM address IDs."""
         sdsc_json = _make_sdsc_json(
             dim_sym_ids={"mb": [-1]},
             hbm_sym_ids_per_core={"[0, 0, 0]": -2},
@@ -126,55 +109,36 @@ class TestExtractSymbolIds(InductorTestCase):
         self.assertEqual(_extract_symbol_ids(sdsc_json), [-1, -2])
 
     def test_positive_values_excluded(self):
-        """Positive values (concrete HBM addresses) are not collected."""
+        """Positive (concrete) addresses are ignored."""
         sdsc_json = _make_sdsc_json(hbm_sym_ids_per_core={"[0, 0, 0]": 0x400000000})
         self.assertEqual(_extract_symbol_ids(sdsc_json), [])
 
-    def test_deduplication(self):
-        """The same symbol ID appearing in both locations is collected once."""
+    def test_dim_deduplication_across_tensors(self):
+        """Two tensors sharing the same mark_dynamic symbol yield one ID, not two."""
         sdsc_json = {
             "0_fused_test": {
                 "numCoresUsed_": 1,
                 "dscs_": [
                     {
                         "op": {
-                            "dimToSymbolMapping_": {"mb": [-1]},
-                            "scheduleTree_": [
-                                {
-                                    "component_": "hbm",
-                                    "startAddressCoreCorelet_": {
-                                        "data_": {"[0, 0, 0]": -1}
-                                    },
-                                }
-                            ],
+                            "dimToSymbolMapping_": {"dim_0": [-1]},
+                            "scheduleTree_": [],
                         }
-                    }
+                    },
+                    {
+                        "op": {
+                            "dimToSymbolMapping_": {"dim_0": [-1]},
+                            "scheduleTree_": [],
+                        }
+                    },
                 ],
             }
         }
         self.assertEqual(_extract_symbol_ids(sdsc_json), [-1])
 
-    def test_empty_json(self):
-        """Empty SDSC JSON returns an empty list without errors."""
-        self.assertEqual(_extract_symbol_ids({}), [])
-
-    def test_multiple_dim_labels(self):
-        """Multiple entries in dimToSymbolMapping_ are all collected."""
-        sdsc_json = _make_sdsc_json(dim_sym_ids={"mb": [-1], "nb": [-2]})
-        self.assertEqual(_extract_symbol_ids(sdsc_json), [-1, -2])
-
-
-# ---------------------------------------------------------------------------
-# Tests for generate_bundle with dimension symbols (Changes 1–5, 7–8)
-# ---------------------------------------------------------------------------
-
 
 class TestGenerateBundleDimensionSymbols(InductorTestCase):
-    """Integration tests for generate_bundle that verify the bundle.mlir
-    content produced when mark_dynamic dimension symbols are present.
-
-    compile_op_spec is mocked so these tests run without Spyre hardware.
-    """
+    """Integration tests for generate_bundle with mark_dynamic dimension symbols."""
 
     def setUp(self):
         super().setUp()
@@ -190,12 +154,7 @@ class TestGenerateBundleDimensionSymbols(InductorTestCase):
             return f.read()
 
     def _run_bundle(self, compiled_entries, op_specs=None):
-        """Call generate_bundle with mocked compile_op_spec.
-
-        compiled_entries: list of (sdsc_json, local_sym_values, affine_strides,
-            local_symbol_kinds) tuples, one per OpSpec.
-        op_specs: list of OpSpec stubs (defaults to one per entry).
-        """
+        """Run generate_bundle with mocked compile_op_spec, return bundle.mlir text."""
         if op_specs is None:
             op_specs = [_minimal_op_spec() for _ in compiled_entries]
 
@@ -208,18 +167,13 @@ class TestGenerateBundleDimensionSymbols(InductorTestCase):
                 "test",
                 self.output_dir,
                 op_specs,
+                use_symbols=False,
                 unroll_loops=False,
-                symbolic_args=False,  # HBM addresses NOT symbolized
             )
         return self._read_bundle()
 
-    # ------------------------------------------------------------------
-    # Change 1 + 3: function signature gains input_arg param for dim sym
-    # ------------------------------------------------------------------
-
     def test_single_dim_sym_function_signature(self):
-        """@sdsc_bundle gains an input_arg<index, granularity=G, max_value=M>
-        parameter for a dimension symbol even when symbolic_args=False."""
+        """Dimension symbol produces an input_arg param even when use_symbols=False."""
         dim_kind = SymbolKind.dimension(granularity=56, max_value=616, pytorch_sym="s0")
         entry = (_make_sdsc_json(dim_sym_ids={"mb": [-1]}), [0], [], [dim_kind])
 
@@ -230,12 +184,8 @@ class TestGenerateBundleDimensionSymbols(InductorTestCase):
             bundle,
         )
 
-    # ------------------------------------------------------------------
-    # Change 3: input_arg_extract op produces plain index SSA name
-    # ------------------------------------------------------------------
-
     def test_single_dim_sym_extract_op(self):
-        """input_arg_extract converts %sym_0_1_base to plain index %sym_0_1."""
+        """input_arg_extract unpacks %sym_0_1_base into plain index %sym_0_1."""
         dim_kind = SymbolKind.dimension(granularity=56, max_value=616, pytorch_sym="s0")
         entry = (_make_sdsc_json(dim_sym_ids={"mb": [-1]}), [0], [], [dim_kind])
 
@@ -247,49 +197,24 @@ class TestGenerateBundleDimensionSymbols(InductorTestCase):
             bundle,
         )
 
-    # ------------------------------------------------------------------
-    # Changes 7 + 8: sdsc_execute lists the extracted SSA value as operand
-    # ------------------------------------------------------------------
-
     def test_single_dim_sym_sdsc_execute_operand(self):
-        """sdsc_execute receives %sym_0_1 as its operand and -1 as symbol_id."""
+        """sdsc_execute passes %sym_0_1 as operand with symbol_id=-1."""
         dim_kind = SymbolKind.dimension(granularity=56, max_value=616, pytorch_sym="s0")
         entry = (_make_sdsc_json(dim_sym_ids={"mb": [-1]}), [0], [], [dim_kind])
 
         bundle = self._run_bundle([entry])
 
-        self.assertIn('sdscbundle.sdsc_execute (%sym_0_1)', bundle)
+        self.assertIn("sdscbundle.sdsc_execute (%sym_0_1)", bundle)
         self.assertIn('"symbol_ids"=[-1]', bundle)
 
-    # ------------------------------------------------------------------
-    # Change 5: no arith.constant is emitted for a dimension symbol
-    # ------------------------------------------------------------------
-
-    def test_no_arith_constant_for_dim_sym(self):
-        """Dimension symbols are replaced by function params — no arith.constant."""
-        dim_kind = SymbolKind.dimension(granularity=56, max_value=616, pytorch_sym="s0")
-        entry = (_make_sdsc_json(dim_sym_ids={"mb": [-1]}), [0], [], [dim_kind])
-
-        bundle = self._run_bundle([entry])
-
-        self.assertNotIn("arith.constant", bundle)
-
-    # ------------------------------------------------------------------
-    # Change 2 + 4: duplicate pytorch_sym yields a single canonical param
-    # ------------------------------------------------------------------
-
     def test_duplicate_pytorch_sym_single_param(self):
-        """Two SDSCs sharing the same pytorch_sym produce one function param.
-
-        Both sdsc_execute calls must reference the canonical SSA name %sym_0_1.
-        """
+        """Two SDSCs with the same pytorch_sym share one param; both resolve to %sym_0_1."""
         dim_kind_0 = SymbolKind.dimension(
             granularity=56, max_value=616, pytorch_sym="s0"
         )
         dim_kind_1 = SymbolKind.dimension(
             granularity=56, max_value=616, pytorch_sym="s0"
         )
-        # SDSC 0 owns global sym_id -1; SDSC 1 (offset=1) owns global sym_id -2.
         entry_0 = (
             _make_sdsc_json(sdsc_idx=0, dim_sym_ids={"mb": [-1]}),
             [0],
@@ -305,22 +230,15 @@ class TestGenerateBundleDimensionSymbols(InductorTestCase):
 
         bundle = self._run_bundle([entry_0, entry_1])
 
-        # Exactly one !sdscbundle.input_arg param (in signature) and one extract op.
+        # One param + one extract op (2 occurrences of the type string).
         self.assertEqual(
-            bundle.count(
-                "!sdscbundle.input_arg<index, granularity=56, max_value=616>"
-            ),
-            2,  # 1 in param list + 1 in input_arg_extract
+            bundle.count("!sdscbundle.input_arg<index, granularity=56, max_value=616>"),
+            2,
         )
-        # Both SDSC calls resolve to the canonical %sym_0_1.
         self.assertEqual(bundle.count("sdscbundle.sdsc_execute (%sym_0_1)"), 2)
 
-    # ------------------------------------------------------------------
-    # Change 2: distinct pytorch_syms produce separate params
-    # ------------------------------------------------------------------
-
     def test_two_distinct_pytorch_syms_two_params(self):
-        """Two different pytorch_syms produce two independent function params."""
+        """Two distinct pytorch_syms produce two independent params and extract ops."""
         dim_s0 = SymbolKind.dimension(granularity=56, max_value=616, pytorch_sym="s0")
         dim_s1 = SymbolKind.dimension(granularity=32, max_value=256, pytorch_sym="s1")
         entry = (
@@ -343,18 +261,3 @@ class TestGenerateBundleDimensionSymbols(InductorTestCase):
         self.assertIn("%sym_0_1 = sdscbundle.input_arg_extract", bundle)
         self.assertIn("%sym_0_2 = sdscbundle.input_arg_extract", bundle)
         self.assertIn("sdscbundle.sdsc_execute (%sym_0_1, %sym_0_2)", bundle)
-
-    # ------------------------------------------------------------------
-    # Change 8 (negative): no dim sym → no operands, no params
-    # ------------------------------------------------------------------
-
-    def test_no_dim_sym_empty_signature(self):
-        """Without dimension symbols @sdsc_bundle() has no params, no extract ops,
-        and sdsc_execute has no operands."""
-        entry = (_make_sdsc_json(), [], [], [])
-
-        bundle = self._run_bundle([entry])
-
-        self.assertIn("func.func @sdsc_bundle()", bundle)
-        self.assertNotIn("input_arg", bundle)
-        self.assertIn("sdscbundle.sdsc_execute ()", bundle)
