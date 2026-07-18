@@ -1,0 +1,230 @@
+name: Testmon config suites
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+permissions:
+  contents: read
+  checks: write
+  pull-requests: read
+  actions: read
+
+jobs:
+  generate_matrix:
+    name: Generate config matrix
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.collect.outputs.matrix }}
+      has_suites: ${{ steps.collect.outputs.has_suites }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Build recursive config matrix
+        id: collect
+        run: |
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          from pathlib import Path
+
+          root = Path("tests/configs")
+          paths = sorted({p for p in root.rglob("*.yaml")} | {p for p in root.rglob("*.yml")}) if root.exists() else []
+          configs = []
+
+          for path in paths:
+            if not path.is_file():
+              continue
+            if path.name.startswith("."):
+              continue
+            if path.name == "example_test_config.yaml":
+              continue
+            rel = path.relative_to(root).with_suffix("")
+            suite_name = "__".join(rel.parts)
+            configs.append({"name": suite_name, "config": str(path)})
+
+          print(f"matrix={json.dumps(configs)}")
+          print(f"has_suites={'true' if configs else 'false'}")
+          PY
+
+  build_torch_spyre:
+    name: Build torch-spyre wheel
+    needs: generate_matrix
+    runs-on:
+      - x86_64
+      - spyre_pf_x0
+      - linux
+      - image_spyre_backend
+    timeout-minutes: 40
+    outputs:
+      wheel_name: ${{ steps.build.outputs.wheel_name }}
+    steps:
+      - name: Checkout composite actions
+        uses: actions/checkout@v4
+        with:
+          sparse-checkout: .github/actions
+          sparse-checkout-cone-mode: false
+
+      - name: Checkout codebase
+        uses: actions/checkout@v4
+        with:
+          path: torch-spyre
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          repository: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
+
+      - name: Gather runner info
+        uses: ./.github/actions/gather-runner-info
+        with:
+          verbose: 'true'
+          torch_spyre_dir: torch-spyre
+
+      - name: Build torch-spyre wheel
+        id: build
+        uses: ./.github/actions/build-torch-spyre-wheel
+        with:
+          torch_spyre_dir: torch-spyre
+          image_label: image_spyre_backend
+
+      - name: Upload torch-spyre wheel
+        uses: actions/upload-artifact@v4
+        with:
+          name: torch-spyre-wheel
+          path: torch-spyre/dist/*.whl
+          if-no-files-found: error
+          retention-days: 5
+
+  run_suites:
+    name: ${{ matrix.suite.name }}
+    needs: [generate_matrix, build_torch_spyre]
+    if: needs.generate_matrix.outputs.has_suites == 'true'
+    runs-on:
+      - x86_64
+      - spyre_pf_x1
+      - linux
+      - image_torch_spyre
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        suite: ${{ fromJson(needs.generate_matrix.outputs.matrix) }}
+    env:
+      CI: ''
+      CLONED_TORCH_SPYRE_DIR: /home/senuser/torch-spyre
+      TESTMON_DATAFILE: /home/senuser/torch-spyre/.testmondata_${{ matrix.suite.name }}
+    steps:
+      - name: Checkout composite actions
+        uses: actions/checkout@v4
+        with:
+          sparse-checkout: .github/actions
+          sparse-checkout-cone-mode: false
+
+      - name: Checkout codebase
+        uses: actions/checkout@v4
+        with:
+          path: torch-spyre
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          repository: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
+
+      - name: Clean stale build cache and artifacts
+        run: |
+          cd "$CLONED_TORCH_SPYRE_DIR"
+          rm -rf build/ dist/ *.egg-info/ .pytest_cache/
+          find . -name "*.pyc" -delete
+          find . -name "__pycache__" -delete
+
+      - name: Gather runner info
+        uses: ./.github/actions/gather-runner-info
+        with:
+          verbose: 'true'
+          torch_spyre_dir: torch-spyre
+
+      - name: Install prebuilt torch-spyre
+        uses: ./.github/actions/install-prebuilt-torch-spyre
+        with:
+          torch_spyre_dir: torch-spyre
+          artifact_name: torch-spyre-wheel
+
+      - name: Install pytest-testmon if missing
+        run: |
+          cd "$CLONED_TORCH_SPYRE_DIR"
+          source .venv/bin/activate
+          if ! python3 -m pip show pytest >/dev/null 2>&1; then
+            echo "pytest is missing; installing now..."
+            python3 -m pip install pytest
+          fi
+          if ! python3 -m pip show pytest-testmon >/dev/null 2>&1; then
+            echo "pytest-testmon is missing; installing now..."
+            python3 -m pip install pytest-testmon
+          fi
+
+      - name: Download previous .testmon artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          cd "$CLONED_TORCH_SPYRE_DIR"
+
+          PREV_SHA=$(git rev-list --max-count=2 HEAD | tail -n1 || true)
+          if [[ -z "$PREV_SHA" ]]; then
+            echo "No previous commit available in this checkout; skipping testmon download"
+            exit 0
+          fi
+
+          RUN_ID=$(gh run list \
+            --repo "${{ github.repository }}" \
+            --workflow "${{ github.workflow }}" \
+            --json databaseId,headSha \
+            --jq ".[] | select(.headSha==\"$PREV_SHA\") | .databaseId" \
+            | head -n1 || true)
+
+          if [[ -z "$RUN_ID" ]]; then
+            echo "No previous run found for SHA $PREV_SHA"
+            exit 0
+          fi
+
+          echo "Found previous run $RUN_ID for SHA $PREV_SHA"
+          rm -rf old_testmon
+          gh run download "$RUN_ID" --repo "${{ github.repository }}" -D old_testmon || true
+
+          ART=$(find old_testmon -type f -name "${{ matrix.suite.name }}_testmon*" | head -n1 || true)
+          if [[ -n "$ART" ]]; then
+            mkdir -p "$(dirname "$TESTMON_DATAFILE")"
+            cp "$ART" "$TESTMON_DATAFILE"
+            echo "Restored testmon datafile: $TESTMON_DATAFILE"
+          else
+            echo "No matching .testmon artifact found for suite ${matrix.suite.name}"
+          fi
+
+      - name: Run suite with testmon
+        uses: ./.github/actions/run-test-suite
+        with:
+          torch_spyre_dir: torch-spyre
+          suite_name: ${{ matrix.suite.name }}
+          config: ${{ matrix.suite.config }}
+          extra_test_flags: '--testmon -v -m "not xfail"'
+          max_attempts: '3'
+          stall_timeout_secs: '300'
+          stall_check_interval: '30'
+          parallel: 'false'
+
+      - name: Upload .testmon artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.suite.name }}_testmon
+          path: /home/senuser/torch-spyre/.testmondata_${{ matrix.suite.name }}
+          if-no-files-found: ignore
