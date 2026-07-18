@@ -1,10 +1,108 @@
 name: Testmon config suites
 
+# ---------------------------------------------------------------------------
+# Test-selection strategy: pytest-testmon, parallelized across suites
+#
+# tests/run_test.sh is used EXACTLY as-is (not modified). Every flag testmon
+# needs is injected via env vars pytest itself reads (PYTEST_ADDOPTS,
+# TESTMON_DATAFILE) -- run_test.sh's own argv parsing is never touched.
+#
+# THERE IS NO SINGLE SHARED .testmondata ACROSS MACHINES
+# --------------------------------------------------------------------------
+# This keeps the same suite-level parallelism as tests.yml / _test_matrix.
+# yaml: `strategy: matrix` fans every config out to its own self-hosted
+# runner (a different physical machine per suite, all running at once, same
+# as today). Each suite gets its OWN .testmondata, tagged by suite name --
+# exactly like the existing workflow already keeps per-suite coverage
+# segments isolated (`${{ matrix.suite.name }}_config`):
+#   - suite "test_spyre_config"'s runner only ever reads/writes an artifact
+#     named "test_spyre_config_testmon"
+#   - suite "test_stream_config"'s runner only ever reads/writes
+#     "test_stream_config_testmon"
+#   - ...and so on, one artifact per suite, never touched by any other
+#     suite's job.
+# Nothing is merged or reconciled across suites, and nothing needs to be:
+# testmon's dependency graph for suite A's tests has nothing to do with
+# suite B's tests, so there's no shared state to race over in the first
+# place. The only thing that has to be unique per suite is the artifact
+# NAME (so two suites uploading in the same run don't collide) -- which
+# `${{ matrix.suite.name }}` already guarantees.
+#
+# This workflow intentionally does NOT include the distributed multi-Spyre
+# job (test_multi_spyre in _test_matrix.yaml) -- only the regular per-config
+# suite matrix.
+#
+# Flow, PER SUITE (one matrix job per config, each on its own runner):
+#   1. resolve_previous_testmon_run (one shared lightweight job) looks up
+#      the most recent COMPLETED run of THIS workflow against the commit
+#      before this push/PR update.
+#   2. Each suite job downloads ITS OWN "<suite>_testmon" artifact from
+#      that previous run, if one exists, and restores it before tests run.
+#   3. run_test.sh runs with PYTEST_ADDOPTS=--testmon and TESTMON_DATAFILE
+#      pinned to an absolute path (see below for why). testmon then
+#      deselects only the tests in THIS suite whose dependencies are
+#      unchanged, and records fresh dependency data for whatever did run.
+#   4. Each suite uploads its own updated .testmondata as "<suite>_testmon"
+#      for the next commit's run of that same suite to pick up.
+#
+# WHY TESTMON_DATAFILE IS SET TO AN ABSOLUTE PATH (found by reading
+# run_test.sh):
+#   run_test.sh runs pytest once PER TEST FILE, `cd`-ing into that file's
+#   own directory each time. With testmon's default *relative* db filename
+#   that would scatter a separate .testmondata into every test file's own
+#   source directory instead of one coherent db for the suite. Env vars are
+#   inherited regardless of cwd, so pinning TESTMON_DATAFILE to one
+#   absolute path keeps every pytest invocation for a given suite -- across
+#   every file it resolves to -- writing to the same one db.
+#
+# THE --parallel RACE CONDITION, READ DIRECTLY OUT OF run_test.sh:
+#   --parallel round-robins ALL node IDs for a suite across N Spyre-card
+#   subshells up front, and those N subshells run CONCURRENTLY for the
+#   whole suite (not just briefly), each working through its own slice of
+#   files. That means up to N pytest processes can be writing to the SAME
+#   suite's .testmondata at once, sustained for the whole run. Every pytest
+#   session ends by deleting any db row that isn't in ITS OWN collected set
+#   and isn't already marked stable (testmon_core.py: sync_db_fs_tests). If
+#   file A's process runs that cleanup while file B's process -- a
+#   different file testmon selected concurrently because it changed --
+#   hasn't committed its results yet, A can delete B's fresh data out from
+#   under it. testmon's SQLite backend opens in WAL mode with a 60s
+#   busy-timeout (testmon/db.py), so concurrent writers queue rather than
+#   hard-crash or corrupt the file -- but the logical data-loss above is
+#   real, not theoretical. `parallel: 'false'` is therefore forced on the
+#   run-test-suite call below for every suite: you lose the multi-card
+#   split *within* one suite, but suites still run fully in parallel
+#   against EACH OTHER (separate runners in the matrix), so most of the
+#   wall-clock benefit is preserved, and test selection itself should save
+#   more time than card-sharding did.
+#
+# WHY THIS DOESN'T CONFLICT WITH pytest-cov:
+#   testmon and pytest-cov both drive their own coverage.py Coverage()
+#   instance; running both in one pytest invocation is a known source of
+#   conflicts. coverage_dir is therefore left unset on every run-test-suite
+#   call below (no --cov).
+# ---------------------------------------------------------------------------
+
 on:
   push:
     branches: [main]
+    paths:
+      - torch_spyre/**/*.py
+      - tests/**/*.py
+      - tests/configs/**/*.yaml
   pull_request:
     branches: [main]
+    paths:
+      - torch_spyre/**/*.py
+      - tests/**/*.py
+      - tests/configs/**/*.yaml
+  workflow_dispatch:
+    inputs:
+      test_type:
+        description: 'Suite subset: smoke | core | full | suite_<group> | <label>'
+        required: false
+        type: string
+        default: full
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
@@ -16,52 +114,110 @@ defaults:
 
 permissions:
   contents: read
-  checks: write
-  pull-requests: read
   actions: read
+  pull-requests: read
 
 jobs:
-  generate_matrix:
-    name: Generate config matrix
+  # -------------------------------------------------------------------------
+  # Job 1: find the previous commit's run of THIS workflow, if any. One
+  # lightweight ubuntu-latest job shared by every suite -- each suite job
+  # below just asks it for a run_id, then goes and gets its OWN artifact
+  # from that run.
+  # -------------------------------------------------------------------------
+  resolve_previous_testmon_run:
+    name: Locate previous commit's testmon run
     runs-on: ubuntu-latest
     outputs:
-      matrix: ${{ steps.collect.outputs.matrix }}
-      has_suites: ${{ steps.collect.outputs.has_suites }}
+      run_id: ${{ steps.find.outputs.run_id }}
+      is_first_run: ${{ steps.find.outputs.is_first_run }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Build recursive config matrix
-        id: collect
+      - name: Find previous run
+        id: find
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          python3 - <<'PY' >> "$GITHUB_OUTPUT"
-          import json
-          from pathlib import Path
+          FORCE_FIRST_RUN=false
+          TARGET_REPO="${{ github.repository }}"
 
-          root = Path("tests/configs")
-          paths = sorted({p for p in root.rglob("*.yaml")} | {p for p in root.rglob("*.yml")}) if root.exists() else []
-          configs = []
+          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
+            TARGET_SHA="${{ github.event.before }}"
+            if [[ -z "$TARGET_SHA" || "$TARGET_SHA" == "0000000000000000000000000000000000000000" ]]; then
+              TARGET_SHA=$(git merge-base "origin/${{ github.base_ref }}" HEAD 2>/dev/null || echo "")
+              if [[ -z "$TARGET_SHA" ]]; then
+                FORCE_FIRST_RUN=true
+              fi
+            fi
+          else
+            TARGET_SHA="${{ github.event.before }}"
+            if [[ -z "$TARGET_SHA" || "$TARGET_SHA" == "0000000000000000000000000000000000000000" ]]; then
+              TARGET_SHA=$(git rev-parse HEAD^ 2>/dev/null || echo "")
+              if [[ -z "$TARGET_SHA" ]]; then
+                FORCE_FIRST_RUN=true
+              fi
+            fi
+          fi
 
-          for path in paths:
-            if not path.is_file():
-              continue
-            if path.name.startswith("."):
-              continue
-            if path.name == "example_test_config.yaml":
-              continue
-            rel = path.relative_to(root).with_suffix("")
-            suite_name = "__".join(rel.parts)
-            configs.append({"name": suite_name, "config": str(path)})
+          RUN_ID=""
+          if [[ "$FORCE_FIRST_RUN" == "false" && -n "$TARGET_SHA" ]]; then
+            RUN_ID=$(gh run list \
+              --repo "$TARGET_REPO" \
+              --workflow "${{ github.workflow }}" \
+              --json databaseId,headSha,status \
+              --jq ".[] | select(.headSha==\"$TARGET_SHA\") | select(.status==\"completed\") | .databaseId" \
+              | head -n1)
+          fi
 
-          print(f"matrix={json.dumps(configs)}")
-          print(f"has_suites={'true' if configs else 'false'}")
-          PY
+          if [[ -n "$RUN_ID" ]]; then
+            echo "Found previous run: $RUN_ID (sha $TARGET_SHA)"
+            echo "run_id=$RUN_ID" >> "$GITHUB_OUTPUT"
+            echo "is_first_run=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "No previous completed run found for sha '$TARGET_SHA' -- treating as first run"
+            echo "run_id=" >> "$GITHUB_OUTPUT"
+            echo "is_first_run=true" >> "$GITHUB_OUTPUT"
+          fi
 
+  # -------------------------------------------------------------------------
+  # Job 2: generate the suite matrix -- same filter_configs.py logic
+  # _test_matrix.yaml uses, so suite names here line up with the ones
+  # tests.yml already produces (needed so artifact names stay stable).
+  # -------------------------------------------------------------------------
+  generate_matrix:
+    name: Generate test matrix (${{ inputs.test_type || 'full' }})
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.filter.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: |
+            tests/configs/torch_spyre_tests
+            tests/oot_framework/utils/filter_configs.py
+            .github/runner_overrides.yaml
+          sparse-checkout-cone-mode: false
+
+      - name: Filter configs by TEST_TYPE
+        id: filter
+        run: |
+          pip install pyyaml --quiet
+          matrix=$(python3 tests/oot_framework/utils/filter_configs.py \
+            --config-dir tests/configs/torch_spyre_tests \
+            --test-type "${{ inputs.test_type || 'full' }}" \
+            --runner-map .github/runner_overrides.yaml \
+            --format matrix-json)
+          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
+
+  # -------------------------------------------------------------------------
+  # Job 3: build torch-spyre once, shared by every suite job below
+  # (unchanged from _test_matrix.yaml's build_torch_spyre).
+  # -------------------------------------------------------------------------
   build_torch_spyre:
-    name: Build torch-spyre wheel
-    needs: generate_matrix
+    name: Build torch-spyre wheel (once)
     runs-on:
       - x86_64
       - spyre_pf_x0
@@ -77,25 +233,18 @@ jobs:
           sparse-checkout: .github/actions
           sparse-checkout-cone-mode: false
 
-      - name: Checkout codebase
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
         with:
           path: torch-spyre
-          fetch-depth: 0
-          ref: ${{ github.event.pull_request.head.sha || github.sha }}
-          repository: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
 
-      - name: Gather runner info
-        uses: ./.github/actions/gather-runner-info
+      - uses: ./.github/actions/gather-runner-info
         with:
           verbose: 'true'
-          torch_spyre_dir: torch-spyre
 
       - name: Build torch-spyre wheel
         id: build
         uses: ./.github/actions/build-torch-spyre-wheel
         with:
-          torch_spyre_dir: torch-spyre
           image_label: image_spyre_backend
 
       - name: Upload torch-spyre wheel
@@ -106,24 +255,34 @@ jobs:
           if-no-files-found: error
           retention-days: 5
 
-  run_suites:
+  # -------------------------------------------------------------------------
+  # Job 4: run each suite in parallel, each on its own runner, each with
+  # testmon selecting tests against its OWN isolated .testmondata.
+  # -------------------------------------------------------------------------
+  test:
     name: ${{ matrix.suite.name }}
-    needs: [generate_matrix, build_torch_spyre]
-    if: needs.generate_matrix.outputs.has_suites == 'true'
+    needs: [resolve_previous_testmon_run, generate_matrix, build_torch_spyre]
+    if: >-
+      !cancelled() &&
+      (needs.build_torch_spyre.result == 'success' ||
+       needs.build_torch_spyre.result == 'skipped')
     runs-on:
       - x86_64
-      - spyre_pf_x1
+      - ${{ matrix.suite.runner || 'spyre_pf_x1' }}
       - linux
-      - image_torch_spyre
+      - image_spyre_backend
     timeout-minutes: 60
-    strategy:
-      fail-fast: false
-      matrix:
-        suite: ${{ fromJson(needs.generate_matrix.outputs.matrix) }}
     env:
       CI: ''
-      CLONED_TORCH_SPYRE_DIR: /home/senuser/torch-spyre
-      TESTMON_DATAFILE: /home/senuser/torch-spyre/.testmondata_${{ matrix.suite.name }}
+      # Absolute path -- see header notes on why relative won't work with
+      # this specific script's per-file `cd` behavior. Suite-scoped so two
+      # suites landing on the SAME physical runner (possible if your
+      # runner pool is smaller than the matrix) still never touch each
+      # other's db even though the checkout dir is shared.
+      TESTMON_DATAFILE_PATH: ${{ github.workspace }}/torch-spyre/.testmondata_${{ matrix.suite.name }}
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.generate_matrix.outputs.matrix) }}
     steps:
       - name: Checkout composite actions
         uses: actions/checkout@v4
@@ -131,100 +290,113 @@ jobs:
           sparse-checkout: .github/actions
           sparse-checkout-cone-mode: false
 
-      - name: Checkout codebase
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
         with:
           path: torch-spyre
-          fetch-depth: 0
-          ref: ${{ github.event.pull_request.head.sha || github.sha }}
-          repository: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
 
-      - name: Clean stale build cache and artifacts
-        run: |
-          cd "$CLONED_TORCH_SPYRE_DIR"
-          rm -rf build/ dist/ *.egg-info/ .pytest_cache/
-          find . -name "*.pyc" -delete
-          find . -name "__pycache__" -delete
-
-      - name: Gather runner info
-        uses: ./.github/actions/gather-runner-info
+      - uses: ./.github/actions/gather-runner-info
         with:
           verbose: 'true'
-          torch_spyre_dir: torch-spyre
 
       - name: Install prebuilt torch-spyre
         uses: ./.github/actions/install-prebuilt-torch-spyre
-        with:
-          torch_spyre_dir: torch-spyre
-          artifact_name: torch-spyre-wheel
 
-      - name: Install pytest-testmon if missing
+      - name: Ensure pytest-testmon is installed
         run: |
-          cd "$CLONED_TORCH_SPYRE_DIR"
+          source "$HOME/.bashrc"
+          source /etc/profile.d/ibm-aiu-setup.sh
+          cd torch-spyre
           source .venv/bin/activate
-          if ! python3 -m pip show pytest >/dev/null 2>&1; then
-            echo "pytest is missing; installing now..."
-            python3 -m pip install pytest
-          fi
-          if ! python3 -m pip show pytest-testmon >/dev/null 2>&1; then
-            echo "pytest-testmon is missing; installing now..."
-            python3 -m pip install pytest-testmon
+          if ! uv pip show pytest-testmon > /dev/null 2>&1; then
+            echo "pytest-testmon is missing! Installing now..."
+            uv pip install pytest-testmon
           fi
 
-      - name: Download previous .testmon artifact
+      # -----------------------------------------------------------------
+      # Restore THIS SUITE's own .testmondata from the previous commit's
+      # run of this workflow, if one exists. continue-on-error covers a
+      # brand-new suite (never uploaded before) or a suite filtered out of
+      # the previous run's test_type -- testmon just collects a fresh
+      # baseline this run instead of selecting against stale/missing data.
+      # -----------------------------------------------------------------
+      - name: Download previous .testmondata for this suite
+        if: needs.resolve_previous_testmon_run.outputs.is_first_run == 'false'
+        id: download_testmon
+        continue-on-error: true
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          set -euo pipefail
-          cd "$CLONED_TORCH_SPYRE_DIR"
-
-          PREV_SHA=$(git rev-list --max-count=2 HEAD | tail -n1 || true)
-          if [[ -z "$PREV_SHA" ]]; then
-            echo "No previous commit available in this checkout; skipping testmon download"
-            exit 0
-          fi
-
-          RUN_ID=$(gh run list \
+          gh run download "${{ needs.resolve_previous_testmon_run.outputs.run_id }}" \
             --repo "${{ github.repository }}" \
-            --workflow "${{ github.workflow }}" \
-            --json databaseId,headSha \
-            --jq ".[] | select(.headSha==\"$PREV_SHA\") | .databaseId" \
-            | head -n1 || true)
+            --name "${{ matrix.suite.name }}_testmon" \
+            --dir testmon_restore
 
-          if [[ -z "$RUN_ID" ]]; then
-            echo "No previous run found for SHA $PREV_SHA"
-            exit 0
-          fi
-
-          echo "Found previous run $RUN_ID for SHA $PREV_SHA"
-          rm -rf old_testmon
-          gh run download "$RUN_ID" --repo "${{ github.repository }}" -D old_testmon || true
-
-          ART=$(find old_testmon -type f -name "${{ matrix.suite.name }}_testmon*" | head -n1 || true)
-          if [[ -n "$ART" ]]; then
-            mkdir -p "$(dirname "$TESTMON_DATAFILE")"
-            cp "$ART" "$TESTMON_DATAFILE"
-            echo "Restored testmon datafile: $TESTMON_DATAFILE"
+      - name: Restore .testmondata into workspace
+        if: steps.download_testmon.outcome == 'success'
+        run: |
+          if [[ -f testmon_restore/.testmondata ]]; then
+            cp testmon_restore/.testmondata "${{ env.TESTMON_DATAFILE_PATH }}"
+            echo "Restored .testmondata for ${{ matrix.suite.name }} from previous run"
           else
-            echo "No matching .testmon artifact found for suite ${matrix.suite.name}"
+            echo "Artifact downloaded but .testmondata not found inside it -- starting fresh"
           fi
 
-      - name: Run suite with testmon
+      - name: Derive report paths
+        run: |
+          CONFIG="${{ matrix.suite.config }}"
+          REPORT_NAME="$(basename "${CONFIG%.yaml}.xml")"
+          echo "REPORT_NAME=${REPORT_NAME}" >> "$GITHUB_ENV"
+          echo "REPORT_PATH=${GITHUB_WORKSPACE}/${REPORT_NAME}" >> "$GITHUB_ENV"
+
+      - name: Run ${{ matrix.suite.name }} tests (testmon-selected)
+        id: run_tests
+        env:
+          # pytest reads both of these itself -- run_test.sh is not
+          # touched. Absolute TESTMON_DATAFILE keeps every per-file `cd`
+          # writing to the one db for this suite (see header notes).
+          PYTEST_ADDOPTS: --testmon
+          TESTMON_DATAFILE: ${{ env.TESTMON_DATAFILE_PATH }}
         uses: ./.github/actions/run-test-suite
         with:
-          torch_spyre_dir: torch-spyre
           suite_name: ${{ matrix.suite.name }}
-          config: ${{ matrix.suite.config }}
-          extra_test_flags: '--testmon -v -m "not xfail"'
-          max_attempts: '3'
-          stall_timeout_secs: '300'
-          stall_check_interval: '30'
+          config: tests/configs/torch_spyre_tests/${{ matrix.suite.config }}
+          torch_spyre_dir: torch-spyre
+          extra_test_flags: -v -m "not xfail"
+          junit_xml_path: ${{ env.REPORT_PATH }}
+          report_name: ${{ env.REPORT_NAME }}
+          # Deliberately off -- see header notes on why testmon and
+          # run_test.sh's own per-file --parallel card-splitting race each
+          # other on .testmondata writes.
           parallel: 'false'
+          # coverage_dir intentionally left unset -- see header notes on
+          # the pytest-cov / pytest-testmon conflict.
+          pre_run: |
+            unset _IBM_AIU_SETUP
+            rm -rf /tmp/etc/ibm/spyre/topo.json
+            source /etc/profile.d/ibm-aiu-setup.sh
 
-      - name: Upload .testmon artifact
+      - name: Upload JUnit XML report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.REPORT_NAME }}
+          path: ${{ env.REPORT_PATH }}
+          if-no-files-found: warn
+          retention-days: 10
+
+      # -----------------------------------------------------------------
+      # Upload this suite's updated .testmondata for the NEXT commit to
+      # pick up. `always()` so a failing/flaky suite still saves whatever
+      # data it collected before failing. Name is scoped to the suite --
+      # exactly like the existing per-suite coverage upload -- which is
+      # what makes this safe under a parallel matrix with zero shared
+      # filesystem or artifact-name collisions across suites.
+      # -----------------------------------------------------------------
+      - name: Upload updated .testmondata
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.suite.name }}_testmon
-          path: /home/senuser/torch-spyre/.testmondata_${{ matrix.suite.name }}
-          if-no-files-found: ignore
+          path: ${{ env.TESTMON_DATAFILE_PATH }}
+          if-no-files-found: warn
+          retention-days: 30
