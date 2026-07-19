@@ -1,4 +1,3 @@
-
 import torch
 from typing import Optional
 from torch_spyre import _C  # C++ extension module
