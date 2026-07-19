@@ -51,17 +51,26 @@ name: Testmon config suites
 # suite matrix.
 #
 # Flow, PER SUITE (one matrix job per config, each on its own runner):
-#   1. resolve_previous_testmon_run (one shared lightweight job) looks up
-#      the most recent COMPLETED run of THIS workflow against the commit
-#      before this push/PR update.
-#   2. Each suite job downloads ITS OWN "<suite>_testmon" artifact from
-#      that previous run, if one exists, and restores it before tests run.
-#   3. run_test.sh runs with PYTEST_ADDOPTS=--testmon and TESTMON_DATAFILE
+#   1. resolve_previous_testmon_run (ubuntu-latest, gh CLI available)
+#      looks up the most recent COMPLETED run of THIS workflow against the
+#      commit before this push/PR update.
+#   2. restage_previous_testmon (ubuntu-latest matrix, one leg per suite)
+#      downloads THIS SUITE's "<suite>_testmon" artifact from that
+#      previous run via `gh run download`, and re-uploads it as
+#      "<suite>_testmon_relay" scoped to THIS run. This indirection exists
+#      because the self-hosted Spyre runners used by the `test` job below
+#      do NOT have the gh CLI installed -- only ubuntu-latest does.
+#   3. Each suite's `test` job (self-hosted) downloads its own
+#      "<suite>_testmon_relay" artifact with the plain, always-available
+#      actions/download-artifact@v4 (no CLI tooling required) and restores
+#      it before tests run.
+#   4. run_test.sh runs with PYTEST_ADDOPTS=--testmon and TESTMON_DATAFILE
 #      pinned to an absolute path (see below for why). testmon then
 #      deselects only the tests in THIS suite whose dependencies are
 #      unchanged, and records fresh dependency data for whatever did run.
-#   4. Each suite uploads its own updated .testmondata as "<suite>_testmon"
-#      for the next commit's run of that same suite to pick up.
+#   5. Each suite uploads its own updated .testmondata as "<suite>_testmon"
+#      (the canonical name) for the next commit's run of that same suite
+#      to pick up in step 2 above.
 #
 # WHY TESTMON_DATAFILE IS SET TO AN ABSOLUTE PATH (found by reading
 # run_test.sh):
@@ -231,6 +240,55 @@ jobs:
           echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
 
   # -------------------------------------------------------------------------
+  # Job 3: relay each suite's previous .testmondata into THIS run, using
+  # only ubuntu-latest (which has `gh` preinstalled). The self-hosted Spyre
+  # runners used by the `test` job below do NOT have the gh CLI available,
+  # so any `gh run download` there fails with "gh: command not found" --
+  # that's exactly the bug this job exists to avoid. Each self-hosted
+  # suite job then just uses the plain, universally-available
+  # actions/download-artifact@v4 to pick up what this job relayed.
+  # -------------------------------------------------------------------------
+  restage_previous_testmon:
+    name: Restage ${{ matrix.suite.name }} testmon data
+    needs: [resolve_previous_testmon_run, generate_matrix]
+    if: needs.resolve_previous_testmon_run.outputs.is_first_run == 'false'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.generate_matrix.outputs.matrix) }}
+    steps:
+      - name: Compute safe suite id
+        run: |
+          SAFE_ID=$(echo "${{ matrix.suite.name }}" | tr -c 'A-Za-z0-9_.-' '_')
+          echo "SAFE_SUITE_ID=${SAFE_ID}" >> "$GITHUB_ENV"
+
+      - name: Fetch this suite's testmon data from the previous run
+        id: fetch
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh run download "${{ needs.resolve_previous_testmon_run.outputs.run_id }}" \
+            --repo "${{ github.repository }}" \
+            --name "${{ env.SAFE_SUITE_ID }}_testmon" \
+            --dir fetched
+
+      - name: Re-upload as this run's artifact
+        if: steps.fetch.outcome == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          # Deliberately NOT "<suite>_testmon" -- that name is the
+          # canonical one the `test` job below uploads at the END of
+          # this same run (for the NEXT commit to find). Two uploads with
+          # the same artifact name in one run is a hard error in
+          # upload-artifact@v4, so this transient relay copy gets its own
+          # "_relay" suffix.
+          name: ${{ env.SAFE_SUITE_ID }}_testmon_relay
+          path: fetched/.testmondata
+          if-no-files-found: warn
+          retention-days: 1
+
+  # -------------------------------------------------------------------------
   # Job 3: build torch-spyre once, shared by every suite job below
   # (unchanged from _test_matrix.yaml's build_torch_spyre).
   # -------------------------------------------------------------------------
@@ -279,11 +337,13 @@ jobs:
   # -------------------------------------------------------------------------
   test:
     name: ${{ matrix.suite.name }}
-    needs: [resolve_previous_testmon_run, generate_matrix, build_torch_spyre]
+    needs: [restage_previous_testmon, generate_matrix, build_torch_spyre]
     if: >-
       !cancelled() &&
       (needs.build_torch_spyre.result == 'success' ||
-       needs.build_torch_spyre.result == 'skipped')
+       needs.build_torch_spyre.result == 'skipped') &&
+      (needs.restage_previous_testmon.result == 'success' ||
+       needs.restage_previous_testmon.result == 'skipped')
     runs-on:
       - x86_64
       - ${{ matrix.suite.runner || 'spyre_pf_x1' }}
@@ -348,16 +408,19 @@ jobs:
       # baseline this run instead of selecting against stale/missing data.
       # -----------------------------------------------------------------
       - name: Download previous .testmondata for this suite
-        if: needs.resolve_previous_testmon_run.outputs.is_first_run == 'false'
         id: download_testmon
         continue-on-error: true
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          gh run download "${{ needs.resolve_previous_testmon_run.outputs.run_id }}" \
-            --repo "${{ github.repository }}" \
-            --name "${{ env.SAFE_SUITE_ID }}_testmon" \
-            --dir testmon_restore
+        uses: actions/download-artifact@v4
+        with:
+          # Deliberately NOT a `gh run download` call here -- these
+          # self-hosted Spyre runners don't have the gh CLI installed
+          # (unlike ubuntu-latest, which does). restage_previous_testmon
+          # already did the gh-based lookup on ubuntu-latest and relayed
+          # this suite's data into THIS run under "_relay"; this step just
+          # grabs it with the plain built-in action, which works
+          # everywhere and needs no CLI tooling on the runner at all.
+          name: ${{ env.SAFE_SUITE_ID }}_testmon_relay
+          path: testmon_restore
 
       - name: Restore .testmondata into workspace
         if: steps.download_testmon.outcome == 'success'
