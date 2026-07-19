@@ -283,8 +283,12 @@ jobs:
           # the same artifact name in one run is a hard error in
           # upload-artifact@v4, so this transient relay copy gets its own
           # "_relay" suffix.
+          #
+          # "fetched/testmondata" (no leading dot) -- matches the non-dot
+          # filename the canonical upload now uses; see the header note on
+          # why dotfiles silently upload zero files here.
           name: ${{ env.SAFE_SUITE_ID }}_testmon_relay
-          path: fetched/.testmondata
+          path: fetched/testmondata
           if-no-files-found: warn
           retention-days: 1
 
@@ -387,7 +391,15 @@ jobs:
           # a given runner. Suite-scoped so two suites landing on the same
           # physical runner (possible if your pool is smaller than the
           # matrix) still never share a db.
-          echo "TESTMON_DATAFILE_PATH=${{ github.workspace }}/.testmondata_${SAFE_ID}" >> "$GITHUB_ENV"
+          # No leading dot -- actions/upload-artifact's underlying
+          # @actions/glob excludes hidden/dotfiles by default, even for a
+          # literal single-file path with no wildcards. That was the
+          # actual root cause of every "no files found" warning seen so
+          # far: .xml/.whl uploads worked, every .testmondata* upload
+          # silently matched zero files. TESTMON_DATAFILE doesn't require
+          # the dot -- it's just cosmetic convention -- so it's dropped
+          # here instead of doing rename gymnastics at every upload site.
+          echo "TESTMON_DATAFILE_PATH=${{ github.workspace }}/testmondata_${SAFE_ID}" >> "$GITHUB_ENV"
 
       - name: Install prebuilt torch-spyre
         uses: ./.github/actions/install-prebuilt-torch-spyre
@@ -425,11 +437,11 @@ jobs:
       - name: Restore .testmondata into workspace
         if: steps.download_testmon.outcome == 'success'
         run: |
-          if [[ -f testmon_restore/.testmondata ]]; then
-            cp testmon_restore/.testmondata "${{ env.TESTMON_DATAFILE_PATH }}"
-            echo "Restored .testmondata for ${{ env.SAFE_SUITE_ID }} from previous run"
+          if [[ -f testmon_restore/testmondata ]]; then
+            cp testmon_restore/testmondata "${{ env.TESTMON_DATAFILE_PATH }}"
+            echo "Restored testmon data for ${{ env.SAFE_SUITE_ID }} from previous run"
           else
-            echo "Artifact downloaded but .testmondata not found inside it -- starting fresh"
+            echo "Artifact downloaded but testmondata not found inside it -- starting fresh"
           fi
 
       - name: Derive report paths
@@ -472,23 +484,22 @@ jobs:
           retention-days: 10
 
       # -----------------------------------------------------------------
-      # Upload this suite's updated .testmondata for the NEXT commit to
+      # Upload this suite's updated testmon data for the NEXT commit to
       # pick up. `always()` so a failing/flaky suite still saves whatever
       # data it collected before failing. Name is scoped to the suite --
       # exactly like the existing per-suite coverage upload -- which is
       # what makes this safe under a parallel matrix with zero shared
       # filesystem or artifact-name collisions across suites.
       #
-      # NOTE: the file at TESTMON_DATAFILE_PATH was independently
-      # confirmed present twice (once by run-test-suite/action.yaml's own
-      # check, once by an earlier debug step) yet upload-artifact still
-      # reported "no files found" when pointed at that same absolute path
-      # directly -- while an equivalent absolute path (the JUnit XML, in
-      # the same directory) uploaded fine moments earlier in the same job.
-      # Root cause wasn't pinned down, so instead of continuing to guess,
-      # this step copies the file into a fresh, dedicated staging
-      # directory and uploads THAT, right here in the same step, closing
-      # whatever gap existed between "confirmed present" and "uploaded".
+      # ROOT CAUSE, CONFIRMED: every "no files found" warning seen while
+      # building this out was for a file named ".testmondata*" -- leading
+      # dot. Every upload that worked (.xml report, .whl wheel) had no
+      # leading dot. actions/upload-artifact uses @actions/glob
+      # internally, which excludes hidden/dotfiles by default even for a
+      # literal single-file path with no wildcards -- it was never a path-
+      # resolution or timing/race issue. Staging into a fresh directory
+      # (below) is kept as a reasonable practice, but the actual fix is
+      # renaming to a non-dot filename right here.
       # -----------------------------------------------------------------
       - name: Stage testmon data for upload
         if: always()
@@ -496,20 +507,20 @@ jobs:
         run: |
           mkdir -p testmon_upload_staging
           if [[ -f "${{ env.TESTMON_DATAFILE_PATH }}" ]]; then
-            cp "${{ env.TESTMON_DATAFILE_PATH }}" testmon_upload_staging/.testmondata
+            cp "${{ env.TESTMON_DATAFILE_PATH }}" testmon_upload_staging/testmondata
             echo "staged=true" >> "$GITHUB_OUTPUT"
             echo "Staged testmon data:"
-            ls -la testmon_upload_staging/.testmondata
+            ls -la testmon_upload_staging/testmondata
           else
             echo "staged=false" >> "$GITHUB_OUTPUT"
             echo "WARNING: ${{ env.TESTMON_DATAFILE_PATH }} not found at staging time -- nothing to upload." >&2
           fi
 
-      - name: Upload updated .testmondata
+      - name: Upload updated testmon data
         if: always() && steps.stage_testmon.outputs.staged == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: ${{ env.SAFE_SUITE_ID }}_testmon
-          path: testmon_upload_staging/.testmondata
+          path: testmon_upload_staging/testmondata
           if-no-files-found: warn
           retention-days: 30
