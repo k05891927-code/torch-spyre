@@ -90,6 +90,7 @@ name: Testmon config suites
 # job (test_multi_spyre in _test_matrix.yaml) -- only the regular
 # per-config suite matrix.
 #
+
 # THE --parallel RACE CONDITION, READ DIRECTLY OUT OF run_test.sh:
 #   --parallel round-robins ALL node IDs for a suite across N Spyre-card
 #   subshells up front, and those N subshells run CONCURRENTLY for the
@@ -403,7 +404,7 @@ jobs:
       - name: Install prebuilt torch-spyre
         if: needs.build_torch_spyre.result == 'success'
         uses: ./.github/actions/install-prebuilt-torch-spyre
-        
+
       # -----------------------------------------------------------------
       - name: Download previous testmon bundle
         id: download_testmon
