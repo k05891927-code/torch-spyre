@@ -67,7 +67,7 @@ def generate_bundle(
     runtime symbols (``%sym_N`` constants) in ``bundle.mlir``.
     When ``None`` (the default) the value is
     read from ``config.bundle_symbolic_args``.
-    
+
      Dimension symbols (from ``mark_dynamic``) always produce
     ``!sdscbundle.input_arg<index, granularity=G, max_value=M>`` parameters
     independent of ``use_symbols``.
