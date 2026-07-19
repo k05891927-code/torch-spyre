@@ -243,6 +243,49 @@ jobs:
             --format matrix-json)
           echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
 
+
+  # -------------------------------------------------------------------------
+  # Job 3: build torch-spyre ONCE, shared by every suite below.
+  # -------------------------------------------------------------------------
+  build_torch_spyre:
+    name: Build torch-spyre wheel (once)
+    runs-on:
+      - x86_64
+      - spyre_pf_x0
+      - linux
+      - image_spyre_backend
+    timeout-minutes: 40
+    outputs:
+      wheel_name: ${{ steps.build.outputs.wheel_name }}
+    steps:
+      - name: Checkout composite actions
+        uses: actions/checkout@v4
+        with:
+          sparse-checkout: .github/actions
+          sparse-checkout-cone-mode: false
+
+      - uses: actions/checkout@v4
+        with:
+          path: torch-spyre
+
+      - uses: ./.github/actions/gather-runner-info
+        with:
+          verbose: 'true'
+
+      - name: Build torch-spyre wheel
+        id: build
+        uses: ./.github/actions/build-torch-spyre-wheel
+        with:
+          image_label: image_spyre_backend
+
+      - name: Upload torch-spyre wheel
+        uses: actions/upload-artifact@v4
+        with:
+          name: torch-spyre-wheel
+          path: torch-spyre/dist/*.whl
+          if-no-files-found: error
+          retention-days: 5
+
   # -------------------------------------------------------------------------
   # Job 3: relay the PREVIOUS run's single combined testmon bundle into
   # THIS run, using ubuntu-latest (which has `gh` preinstalled -- the
@@ -295,9 +338,11 @@ jobs:
   # -------------------------------------------------------------------------
   test:
     name: ${{ matrix.suite.name }}
-    needs: [restage_previous_testmon, generate_matrix]
+    needs: [restage_previous_testmon, generate_matrix, build_torch_spyre]
     if: >-
       !cancelled() &&
+      (needs.build_torch_spyre.result == 'success' ||
+       needs.build_torch_spyre.result == 'skipped') &&
       (needs.restage_previous_testmon.result == 'success' ||
        needs.restage_previous_testmon.result == 'skipped')
     runs-on:
@@ -355,35 +400,10 @@ jobs:
           find . -name "*.pyc" -delete
           find . -name "__pycache__" -delete
 
-      - name: Build torch-spyre
-        uses: ./.github/actions/build-torch-spyre
-        # NOTE: called with no inputs here, same as
-        # intelligent_test_selection.yaml's own "Build torch-spyre" step,
-        # on the assumption it defaults its checkout-dir input to
-        # "torch-spyre" the same way gather-runner-info and run-test-suite
-        # do elsewhere in this repo. intelligent_test_selection.yaml
-        # checks out straight into $GITHUB_WORKSPACE root (no `path:`),
-        # while this workflow checks out to a "torch-spyre" subdirectory
-        # like _test_matrix.yaml does -- if build-torch-spyre doesn't
-        # actually have a configurable target dir and hardcodes the
-        # workspace root, this step will need an explicit
-        # torch_spyre_dir/working-directory input added. Worth confirming
-        # against that action's actual inputs before relying on this.
-
-      # NOTE: pytest-testmon is installed by run-test-suite/action.yaml
-      # itself (testmon: 'true' below), in the same cd'd/activated venv
-      # tests/run_test.sh actually runs from -- not as a separate step
-      # here. A separate step has to independently re-derive the checkout
-      # directory and can land in a different resolved path than the
-      # action does.
-
-      # -----------------------------------------------------------------
-      # Restore THIS SUITE's own testmon data out of the shared bundle
-      # relayed by restage_previous_testmon, if one exists.
-      # continue-on-error covers a brand-new suite (never in a previous
-      # bundle) or a suite filtered out of the previous run's test_type --
-      # testmon just collects a fresh baseline this run instead of
-      # selecting against stale/missing data.
+      - name: Install prebuilt torch-spyre
+        if: needs.build_torch_spyre.result == 'success'
+        uses: ./.github/actions/install-prebuilt-torch-spyre
+        
       # -----------------------------------------------------------------
       - name: Download previous testmon bundle
         id: download_testmon
