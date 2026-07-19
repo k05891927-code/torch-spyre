@@ -143,7 +143,32 @@ runs:
         # testmon: installed + activated HERE, in the same cd'd/activated
         # venv used by the actual pytest invocation below -- see the header
         # note on why this can't safely live in a separate workflow step.
+        #
+        # Activation is done via a CLI flag appended to the actual
+        # `python3 -m pytest` invocation (through run_test.sh's own "extra
+        # pytest args" forwarding), NOT via PYTEST_ADDOPTS. testmon only
+        # activates at all if --testmon/--testmon-forceselect is literally
+        # present in pytest's argv at startup (testmon/configure.py:
+        # _get_notestmon_reasons returns "not mentioned" and testmon does
+        # nothing -- no collection, no db -- if neither flag is seen).
+        # PYTEST_ADDOPTS has to survive: this export -> a backgrounded `&`
+        # job -> `env ... bash run_test.sh` -> run_test.sh's own internal
+        # subshells -> _run_pytest_isolated -> _run_cmd, before pytest ever
+        # starts. Any one of those hops dropping it means silent no-op,
+        # which is what was actually happening. _COV_FLAGS/_JUNIT_FLAG
+        # below don't have this problem because run_test.sh forwards them
+        # as literal CLI args, appended directly to every
+        # `python3 -m pytest "$_base" "${_args[@]}"` call it makes -- so
+        # _TESTMON_FLAGS rides along the same, already-proven path.
+        #
+        # --testmon-forceselect (not plain --testmon): in --parallel mode
+        # run_test.sh passes explicit "file.py::TestClass::test_x" node
+        # IDs per card, which testmon's own manual-selection check treats
+        # as "you selected tests manually" and silently stops selecting
+        # against -- forceselect prevents that. It's a strict superset of
+        # plain --testmon otherwise, so always using it is safe.
         # -------------------------------------------------------------------
+        _TESTMON_FLAGS=""
         if [[ "${{ inputs.testmon }}" == "true" ]]; then
           if [[ -z "${{ inputs.testmon_datafile }}" ]]; then
             echo "ERROR: testmon=true requires testmon_datafile (absolute path) to be set." >&2
@@ -154,8 +179,9 @@ runs:
             uv pip install pytest-testmon
           fi
           export TESTMON_DATAFILE="${{ inputs.testmon_datafile }}"
-          export PYTEST_ADDOPTS="${PYTEST_ADDOPTS:-} --testmon"
+          _TESTMON_FLAGS="--testmon-forceselect"
           echo "  Testmon       : enabled -> ${TESTMON_DATAFILE}"
+          echo "  Testmon flags : ${_TESTMON_FLAGS}"
         fi
 
         _ARCH="$(uname -m)"
@@ -239,7 +265,7 @@ runs:
             _PARALLEL_FLAG="--parallel"
           fi
 
-          env ${_DTLOG_PREFIX} bash tests/run_test.sh "$CONFIG" ${_PARALLEL_FLAG} ${{ inputs.extra_test_flags }} ${_SLOW_FLAG} ${_JUNIT_FLAG} ${_COV_FLAGS} \
+          env ${_DTLOG_PREFIX} bash tests/run_test.sh "$CONFIG" ${_PARALLEL_FLAG} ${{ inputs.extra_test_flags }} ${_SLOW_FLAG} ${_JUNIT_FLAG} ${_COV_FLAGS} ${_TESTMON_FLAGS} \
             >&"$FIFO_FD" 2>&1 &
           TEST_PID=$!
 
@@ -262,6 +288,13 @@ runs:
           if [[ $TEST_EXIT -eq 0 ]]; then
             echo "=== Attempt ${attempt} PASSED ==="
             echo "${{ inputs.suite_name }} tests done"
+            if [[ "${{ inputs.testmon }}" == "true" ]]; then
+              if [[ -f "${{ inputs.testmon_datafile }}" ]]; then
+                echo "  Testmon db    : present -> $(ls -la "${{ inputs.testmon_datafile }}")"
+              else
+                echo "  Testmon db    : MISSING at ${{ inputs.testmon_datafile }} -- activation likely failed" >&2
+              fi
+            fi
             rm -f "$LOG_FILE" "$STALL_FLAG" "${STALL_FLAG}.done"
             exit 0
           fi
