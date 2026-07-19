@@ -22,7 +22,6 @@ import sympy
 from torch_spyre._inductor import config as _spyre_config
 from torch_spyre._inductor.codegen.compute_ops import SymbolKind
 from torch_spyre._inductor.codegen.superdsc import compile_op_spec
-from torch_spyre._inductor.codegen.unroll import unroll_loop_specs
 from torch_spyre._inductor.op_spec import LoopSpec, OpSpec
 from torch_spyre._inductor.logging_utils import get_inductor_logger
 
@@ -58,7 +57,6 @@ def generate_bundle(
     output_dir: str,
     specs: Sequence,
     use_symbols: bool | None = None,
-    unroll_loops: bool | None = None,
 ):
     """Output the SDSC Bundle for the OpSpecs in output_dir.
 
@@ -67,30 +65,17 @@ def generate_bundle(
 
     ``use_symbols`` controls whether HBM tensor addresses are emitted as
     runtime symbols (``%sym_N`` constants) in ``bundle.mlir``.
-    When ``None`` (the default) the value is read from
-    ``config.bundle_symbolic_args``.
-
-    ``unroll_loops`` controls whether ``LoopSpec`` nodes are fully unrolled
-    into flat ``OpSpec`` nodes before bundle generation.  When ``None`` (the
-    default) the value is read from ``config.unroll_loops``.  Pass an explicit
-    ``True`` or ``False`` to override the config — useful in unit tests that
-    call ``generate_bundle`` directly.
-
-    When ``unroll_loops=True``, each ``LoopSpec`` iteration becomes an
-    independent ``OpSpec`` with concrete per-iteration HBM addresses baked in.
-    When ``unroll_loops=False``, ``LoopSpec`` entries are passed through intact
-    and produce ``scf.for`` loops in the generated ``bundle.mlir``.
-
-    Dimension symbols (from ``mark_dynamic``) always produce
+    When ``None`` (the default) the value is
+    read from ``config.bundle_symbolic_args``.
+    
+     Dimension symbols (from ``mark_dynamic``) always produce
     ``!sdscbundle.input_arg<index, granularity=G, max_value=M>`` parameters
     independent of ``use_symbols``.
     """
     if use_symbols is None:
         use_symbols = _spyre_config.bundle_symbolic_args
-    if unroll_loops is None:
-        unroll_loops = _spyre_config.unroll_loops
 
-    specs_list: list = unroll_loop_specs(list(specs)) if unroll_loops else list(specs)
+    specs_list: list = list(specs)
 
     # -----------------------------------------------------------------------
     # Pass 1: compile all OpSpecs depth-first.
