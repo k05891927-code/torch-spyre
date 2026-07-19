@@ -1,4 +1,4 @@
-=name: Testmon config suites
+name: Testmon config suites
 
 # ---------------------------------------------------------------------------
 # Test-selection strategy: pytest-testmon, parallelized across suites
