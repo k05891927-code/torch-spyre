@@ -30,11 +30,13 @@ name: Testmon config suites
 # runner (a different physical machine per suite, all running at once, same
 # as today). Each suite gets its OWN .testmondata, tagged by suite name --
 # exactly like the existing workflow already keeps per-suite coverage
-# segments isolated (`${{ matrix.suite.name }}_config`):
-#   - suite "test_spyre_config"'s runner only ever reads/writes an artifact
-#     named "test_spyre_config_testmon"
-#   - suite "test_stream_config"'s runner only ever reads/writes
-#     "test_stream_config_testmon"
+# segments isolated (`${{ matrix.suite.name }}_config`). Since suite names
+# can contain spaces and slashes (e.g. "Inductor / Test Copy Back
+# Elision"), a sanitized SAFE_SUITE_ID (computed in a step below) is used
+# for the actual filename/artifact name instead of the raw label:
+#   - suite "Inductor / Test Copy Back Elision" -> SAFE_SUITE_ID
+#     "Inductor___Test_Copy_Back_Elision" -> artifact
+#     "Inductor___Test_Copy_Back_Elision_testmon"
 #   - ...and so on, one artifact per suite, never touched by any other
 #     suite's job.
 # Nothing is merged or reconciled across suites, and nothing needs to be:
@@ -290,13 +292,6 @@ jobs:
     timeout-minutes: 60
     env:
       CI: ''
-      # Absolute path, deliberately OUTSIDE the torch-spyre checkout
-      # entirely (a sibling of it under $GITHUB_WORKSPACE), so it can never
-      # be affected by whatever depth torch_spyre_dir itself resolves to on
-      # a given runner. Suite-scoped so two suites landing on the same
-      # physical runner (possible if your pool is smaller than the matrix)
-      # still never share a db.
-      TESTMON_DATAFILE_PATH: ${{ github.workspace }}/.testmondata_${{ matrix.suite.name }}
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.generate_matrix.outputs.matrix) }}
@@ -314,6 +309,25 @@ jobs:
       - uses: ./.github/actions/gather-runner-info
         with:
           verbose: 'true'
+
+      # -----------------------------------------------------------------
+      # matrix.suite.name is a human label, e.g. "Inductor / Test Copy
+      # Back Elision" -- spaces and a literal "/". Using it raw as a
+      # filename risks the "/" being read as a path separator, and as an
+      # artifact name it's fragile too. Derive one safe id here and use
+      # it everywhere below instead of matrix.suite.name directly.
+      # -----------------------------------------------------------------
+      - name: Compute safe suite id
+        run: |
+          SAFE_ID=$(echo "${{ matrix.suite.name }}" | tr -c 'A-Za-z0-9_.-' '_')
+          echo "SAFE_SUITE_ID=${SAFE_ID}" >> "$GITHUB_ENV"
+          # Absolute path, deliberately OUTSIDE the torch-spyre checkout
+          # entirely (a sibling of it under $GITHUB_WORKSPACE), so it's
+          # immune to whatever depth torch_spyre_dir itself resolves to on
+          # a given runner. Suite-scoped so two suites landing on the same
+          # physical runner (possible if your pool is smaller than the
+          # matrix) still never share a db.
+          echo "TESTMON_DATAFILE_PATH=${{ github.workspace }}/.testmondata_${SAFE_ID}" >> "$GITHUB_ENV"
 
       - name: Install prebuilt torch-spyre
         uses: ./.github/actions/install-prebuilt-torch-spyre
@@ -342,7 +356,7 @@ jobs:
         run: |
           gh run download "${{ needs.resolve_previous_testmon_run.outputs.run_id }}" \
             --repo "${{ github.repository }}" \
-            --name "${{ matrix.suite.name }}_testmon" \
+            --name "${{ env.SAFE_SUITE_ID }}_testmon" \
             --dir testmon_restore
 
       - name: Restore .testmondata into workspace
@@ -350,7 +364,7 @@ jobs:
         run: |
           if [[ -f testmon_restore/.testmondata ]]; then
             cp testmon_restore/.testmondata "${{ env.TESTMON_DATAFILE_PATH }}"
-            echo "Restored .testmondata for ${{ matrix.suite.name }} from previous run"
+            echo "Restored .testmondata for ${{ env.SAFE_SUITE_ID }} from previous run"
           else
             echo "Artifact downloaded but .testmondata not found inside it -- starting fresh"
           fi
@@ -406,7 +420,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.suite.name }}_testmon
+          name: ${{ env.SAFE_SUITE_ID }}_testmon
           path: ${{ env.TESTMON_DATAFILE_PATH }}
           if-no-files-found: warn
           retention-days: 30

@@ -3,6 +3,22 @@ description: >
   Runs a single run_test.sh config with up to MAX_ATTEMPTS retries,
   a stall watchdog, and DTLOG_LEVEL=Info on the final attempt.
 
+# ---------------------------------------------------------------------------
+# CHANGES vs the original action -- testmon support only, additive:
+#   - New inputs: `testmon` and `testmon_datafile`.
+#   - When testmon=true, pytest-testmon is lazy-installed and TESTMON_DATAFILE
+#     / --testmon are exported in EXACTLY the same shell block that already
+#     activates .venv and cd's into TORCH_SPYRE_DIR for pytest-cov -- i.e.
+#     the same place tests/run_test.sh itself actually runs from. This is
+#     deliberate: a separate workflow-level "install pytest-testmon" step
+#     has to independently re-derive TORCH_SPYRE_DIR and can silently land
+#     in a different resolved directory than this action does (that's what
+#     broke the first attempt -- pytest-testmon ended up in the wrong venv).
+#     Doing it here removes that whole class of mismatch by construction.
+#   - tests/run_test.sh itself is NOT modified anywhere below -- testmon is
+#     activated purely via env vars pytest reads on its own.
+# ---------------------------------------------------------------------------
+
 inputs:
   torch_spyre_dir:
     description: Path to the pre-cloned torch-spyre directory
@@ -52,6 +68,23 @@ inputs:
       If set, installs pytest-cov (if missing) and writes
       coverage/<suite>_config/coverage.json under this directory.
       Leave empty to skip coverage entirely.
+    required: false
+    default: ''
+  testmon:
+    description: >
+      If true, lazy-installs pytest-testmon (if missing) into the same venv
+      this action activates below, and exports TESTMON_DATAFILE + appends
+      --testmon to PYTEST_ADDOPTS before running. Mutually exclusive with
+      coverage_dir in practice -- pytest-cov and pytest-testmon both drive
+      their own coverage.py instance, so don't set both on the same call.
+    required: false
+    default: 'false'
+  testmon_datafile:
+    description: >
+      Absolute path for TESTMON_DATAFILE when testmon=true. Must be an
+      absolute path supplied by the caller (e.g. under $GITHUB_WORKSPACE,
+      outside torch_spyre_dir) so it's immune to however torch_spyre_dir
+      itself resolves on a given runner.
     required: false
     default: ''
 
@@ -105,7 +138,25 @@ runs:
           _COV_FLAGS="--cov=torch_spyre --cov-report=json:${COV_FILE}"
           echo "  Coverage      : enabled -> ${COV_FILE}"
         fi
-        
+
+        # -------------------------------------------------------------------
+        # testmon: installed + activated HERE, in the same cd'd/activated
+        # venv used by the actual pytest invocation below -- see the header
+        # note on why this can't safely live in a separate workflow step.
+        # -------------------------------------------------------------------
+        if [[ "${{ inputs.testmon }}" == "true" ]]; then
+          if [[ -z "${{ inputs.testmon_datafile }}" ]]; then
+            echo "ERROR: testmon=true requires testmon_datafile (absolute path) to be set." >&2
+            exit 1
+          fi
+          if ! uv pip show pytest-testmon > /dev/null 2>&1; then
+            echo "pytest-testmon is missing! Installing now..."
+            uv pip install pytest-testmon
+          fi
+          export TESTMON_DATAFILE="${{ inputs.testmon_datafile }}"
+          export PYTEST_ADDOPTS="${PYTEST_ADDOPTS:-} --testmon"
+          echo "  Testmon       : enabled -> ${TESTMON_DATAFILE}"
+        fi
 
         _ARCH="$(uname -m)"
         _SLOW_FLAG=""
@@ -229,5 +280,3 @@ runs:
 
         echo "=== All ${MAX_ATTEMPTS} attempts failed for ${{ inputs.suite_name }} ==="
         exit 1
-
-
