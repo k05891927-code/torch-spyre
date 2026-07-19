@@ -462,6 +462,22 @@ jobs:
             rm -rf /tmp/etc/ibm/spyre/topo.json
             source /etc/profile.d/ibm-aiu-setup.sh
 
+      - name: Debug testmon output
+        if: always()
+        run: |
+          echo "Expected path:"
+          echo "${{ env.TESTMON_DATAFILE_PATH }}"
+          echo
+
+          echo "Workspace:"
+          ls -la "${{ github.workspace }}"
+          echo
+
+          echo "Searching for testmon files:"
+          find "${{ github.workspace }}" -name ".testmondata*" -ls
+          find torch-spyre -name ".testmondata*" -ls
+
+        
       - name: Upload JUnit XML report
         if: always()
         uses: actions/upload-artifact@v4
