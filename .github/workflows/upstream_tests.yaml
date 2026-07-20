@@ -2,22 +2,22 @@ name: upstream-pytorch-tests
 
 on:
   # Run automatically on every merge to main
-  push:
-    branches: [main]
-    paths-ignore:
-      - tests/docs/**
-      - docs/**
-      - README.md
-      - CODEOWNERS
-      - .github/workflows/config_integrity_checker.yaml
-  pull_request:
-    branches: [main]
-    paths-ignore:
-      - tests/docs/**
-      - docs/**
-      - README.md
-      - CODEOWNERS
-      - .github/workflows/config_integrity_checker.yaml
+  # push:
+  #   branches: [main]
+  #   paths-ignore:
+  #     - tests/docs/**
+  #     - docs/**
+  #     - README.md
+  #     - CODEOWNERS
+  #     - .github/workflows/config_integrity_checker.yaml
+  # pull_request:
+  #   branches: [main]
+  #   paths-ignore:
+  #     - tests/docs/**
+  #     - docs/**
+  #     - README.md
+  #     - CODEOWNERS
+  #     - .github/workflows/config_integrity_checker.yaml
   merge_group:
     types: [checks_requested]
 
