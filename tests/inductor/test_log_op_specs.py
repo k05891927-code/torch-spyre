@@ -260,21 +260,23 @@ class TestBundleLogging:
         with patch.object(logger, "isEnabledFor", return_value=True):
             with patch.object(logger, "info") as mock_info:
                 with patch(
-                    "torch_spyre._inductor.codegen.bundle.compile_op_spec",
-                    return_value=({}, [], [], []),
+                    "torch_spyre._inductor.codegen.bundle._compile_specs",
                 ):
-                    with patch("builtins.open", MagicMock()):
-                        from torch_spyre._inductor.codegen.bundle import (
-                            generate_bundle,
-                        )
+                    with patch(
+                        "torch_spyre._inductor.codegen.bundle._emit_specs",
+                    ):
+                        with patch("builtins.open", MagicMock()):
+                            from torch_spyre._inductor.codegen.bundle import (
+                                generate_bundle,
+                            )
 
-                        op = _make_add_op()
-                        generate_bundle(
-                            kernel_name="test_kernel",
-                            output_dir="/tmp/test",
-                            specs=[op],
-                            use_symbols=False,
-                        )
+                            op = _make_add_op()
+                            generate_bundle(
+                                kernel_name="test_kernel",
+                                output_dir="/tmp/test",
+                                specs=[op],
+                                use_symbols=False,
+                            )
 
                 info_calls = mock_info.call_args_list
                 op_spec_calls = [
