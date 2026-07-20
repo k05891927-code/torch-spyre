@@ -17,18 +17,18 @@ from torch._inductor.scheduler import (
     FusedSchedulerNode,
     SchedulerNode,
 )
-from . import config
-from .constants import DEVICE_NAME
-from .scheduler import CountedLoopSchedulerNode
+# from . import config
+# from .constants import DEVICE_NAME
+# from .scheduler import CountedLoopSchedulerNode
 
 
 def _make_fused(
     nodes: list[SchedulerNode | CountedLoopSchedulerNode],
 ) -> BaseSchedulerNode | None:
-    if len(nodes) > 1:
-        return FusedSchedulerNode(nodes[0].scheduler, nodes)
-    elif len(nodes) == 1:
-        return nodes[0]
+    # if len(nodes) > 1:
+    #     return FusedSchedulerNode(nodes[0].scheduler, nodes)
+    # elif len(nodes) == 1:
+    #     return nodes[0]
     return None
 
 
