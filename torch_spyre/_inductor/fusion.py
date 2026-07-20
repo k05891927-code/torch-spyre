@@ -17,18 +17,18 @@ from torch._inductor.scheduler import (
     FusedSchedulerNode,
     SchedulerNode,
 )
-# from . import config
-# from .constants import DEVICE_NAME
-# from .scheduler import CountedLoopSchedulerNode
+from . import config
+from .constants import DEVICE_NAME
+from .scheduler import CountedLoopSchedulerNode
 
 
 def _make_fused(
     nodes: list[SchedulerNode | CountedLoopSchedulerNode],
 ) -> BaseSchedulerNode | None:
-    # if len(nodes) > 1:
-    #     return FusedSchedulerNode(nodes[0].scheduler, nodes)
-    # elif len(nodes) == 1:
-    #     return nodes[0]
+    if len(nodes) > 1:
+        return FusedSchedulerNode(nodes[0].scheduler, nodes)
+    elif len(nodes) == 1:
+        return nodes[0]
     return None
 
 
@@ -43,7 +43,6 @@ def spyre_fuse_nodes(nodes: list[BaseSchedulerNode]) -> list[BaseSchedulerNode]:
     Fuse nodes together to form kernels without changing their order.
     Each kernel will be compiled into a single SuperDSC Bundle.
     """
-    return []
     if len(nodes) == 0:
         return nodes
     if not config.bundle_symbolic_args:
