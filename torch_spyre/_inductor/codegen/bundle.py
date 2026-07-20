@@ -23,9 +23,7 @@ import sympy
 from torch_spyre._inductor import config as _spyre_config
 from torch_spyre._inductor.codegen.compute_ops import SymbolKind
 from torch_spyre._inductor.codegen.superdsc import compile_op_spec
-from torch_spyre._inductor.codegen.unroll import unroll_loop_specs
 from torch_spyre._inductor.op_spec import LoopSpec, OpSpec, format_op_spec_list
-from torch_spyre._inductor.op_spec import LoopSpec, OpSpec
 from torch_spyre._inductor.logging_utils import get_inductor_logger
 
 
@@ -78,8 +76,7 @@ def generate_bundle(
 
     if logger.isEnabledFor(logging.INFO):
         logger.info(
-            "OP SPECS AFTER %s\n%s",
-            "UNROLLING" if unroll_loops else "LOOP-PASS-THROUGH (no unroll)",
+            "OP SPECS FOR BUNDLE GENERATION\n%s",
             format_op_spec_list(specs_list),
         )
 
