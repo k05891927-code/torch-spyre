@@ -90,7 +90,6 @@ name: Testmon config suites
 # job (test_multi_spyre in _test_matrix.yaml) -- only the regular
 # per-config suite matrix.
 #
-
 # THE --parallel RACE CONDITION, READ DIRECTLY OUT OF run_test.sh:
 #   --parallel round-robins ALL node IDs for a suite across N Spyre-card
 #   subshells up front, and those N subshells run CONCURRENTLY for the
@@ -244,49 +243,6 @@ jobs:
             --format matrix-json)
           echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
 
-
-  # -------------------------------------------------------------------------
-  # Job 3: build torch-spyre ONCE, shared by every suite below.
-  # -------------------------------------------------------------------------
-  build_torch_spyre:
-    name: Build torch-spyre wheel (once)
-    runs-on:
-      - x86_64
-      - spyre_pf_x0
-      - linux
-      - image_spyre_backend
-    timeout-minutes: 40
-    outputs:
-      wheel_name: ${{ steps.build.outputs.wheel_name }}
-    steps:
-      - name: Checkout composite actions
-        uses: actions/checkout@v4
-        with:
-          sparse-checkout: .github/actions
-          sparse-checkout-cone-mode: false
-
-      - uses: actions/checkout@v4
-        with:
-          path: torch-spyre
-
-      - uses: ./.github/actions/gather-runner-info
-        with:
-          verbose: 'true'
-
-      - name: Build torch-spyre wheel
-        id: build
-        uses: ./.github/actions/build-torch-spyre-wheel
-        with:
-          image_label: image_spyre_backend
-
-      - name: Upload torch-spyre wheel
-        uses: actions/upload-artifact@v4
-        with:
-          name: torch-spyre-wheel
-          path: torch-spyre/dist/*.whl
-          if-no-files-found: error
-          retention-days: 5
-
   # -------------------------------------------------------------------------
   # Job 3: relay the PREVIOUS run's single combined testmon bundle into
   # THIS run, using ubuntu-latest (which has `gh` preinstalled -- the
@@ -326,24 +282,25 @@ jobs:
   # Job 4: run each suite in parallel, each on its own runner, each with
   # testmon selecting tests against its OWN isolated testmon db.
   #
-  # torch-spyre is built FRESH in each suite's own job below (via
-  # ./.github/actions/build-torch-spyre), matching
-  # intelligent_test_selection.yaml -- NOT via a shared prebuilt wheel like
-  # _test_matrix.yaml does. A shared wheel is built once on one runner
-  # (spyre_pf_x0) and then installed onto whichever different physical
-  # machine each suite happens to land on; if those machines don't have
-  # identical RPM/driver versions (IBM AIU SDK, kernel module, etc.) at
-  # that moment, a wheel built against one machine's environment can be
-  # binary-incompatible with another's. Building per suite guarantees each
-  # one compiles against its own runner's actual current state.
+  # torch-spyre is built FRESH in each suite's own job below, via
+  # ./.github/actions/build-torch-spyre (`uv sync --frozen --all-extras`,
+  # dev/editable install -- see the "Build torch-spyre" step for the full
+  # reasoning) -- NOT via a shared prebuilt wheel like _test_matrix.yaml
+  # does. A shared wheel is built once on one runner (spyre_pf_x0) and then
+  # installed onto whichever different physical machine each suite happens
+  # to land on; if those machines don't have identical RPM/driver versions
+  # (IBM AIU SDK, kernel module, etc.) at that moment, a wheel built
+  # against one machine's environment can be binary-incompatible with
+  # another's. Building per suite guarantees each one compiles against its
+  # own runner's actual current state -- and, as a second independent
+  # benefit, keeps torch_spyre's source out of site-packages, which is
+  # required for testmon to track it at all (see the build step below).
   # -------------------------------------------------------------------------
   test:
     name: ${{ matrix.suite.name }}
-    needs: [restage_previous_testmon, generate_matrix, build_torch_spyre]
+    needs: [restage_previous_testmon, generate_matrix]
     if: >-
       !cancelled() &&
-      (needs.build_torch_spyre.result == 'success' ||
-       needs.build_torch_spyre.result == 'skipped') &&
       (needs.restage_previous_testmon.result == 'success' ||
        needs.restage_previous_testmon.result == 'skipped')
     runs-on:
@@ -401,10 +358,61 @@ jobs:
           find . -name "*.pyc" -delete
           find . -name "__pycache__" -delete
 
-      - name: Install prebuilt torch-spyre
-        if: needs.build_torch_spyre.result == 'success'
-        uses: ./.github/actions/install-prebuilt-torch-spyre
+      # -----------------------------------------------------------------
+      # ./.github/actions/build-torch-spyre -- runs `uv sync --frozen
+      # --all-extras` in torch-spyre/, reconciling the pre-baked .venv
+      # against this checkout's pyproject.toml/uv.lock and rebuilding
+      # torch-spyre from source (--reinstall-package). `uv sync` installs
+      # the project itself in dev/editable mode by default, which is what
+      # also fixes testmon's dependency tracking (not just building
+      # correctly) -- see below.
+      #
+      # WHY THIS MATTERS FOR TESTMON, NOT JUST FOR HAVING A WORKING BUILD:
+      # Confirmed from an actual coverage.json: a regular (non-editable)
+      # wheel install puts torch_spyre's .py files under
+      # .venv/lib/python3.12/site-packages/torch_spyre/, and pytest-
+      # testmon's own setup_coverage() (testmon_core.py) hardcodes an
+      # `omit` set built from sysconfig.get_paths() "*lib*" entries --
+      # which blanket-excludes the ENTIRE venv site-packages tree,
+      # regardless of `include`. Since torch_spyre would land there under
+      # a regular install, it'd get swept into that exclusion even though
+      # it's the package under test -- confirmed empirically: the testmon
+      # db had zero entries for anything under torch_spyre/, only tests/*.
+      # There's no config-file override for this in pytest-testmon 2.2.0
+      # (it passes config_file=False), so the fix has to be upstream of
+      # testmon: keep torch_spyre's actual source files OUT of
+      # site-packages in the first place. `uv sync`'s default dev-mode
+      # install does exactly that -- the .py files stay in the checkout
+      # tree (under pytest's rootdir), so testmon's default
+      # include=[rootdir/*] naturally covers them and the site-packages
+      # omit never comes into play.
+      #
+      # Per-suite (not shared/built-once) also sidesteps the original
+      # cross-machine binary-compatibility concern with a shared wheel: a
+      # compiled extension built on one runner's IBM AIU SDK/kernel module
+      # version being installed onto a different runner is avoided
+      # entirely, since every suite builds against its own runner's actual
+      # current state.
+      # -----------------------------------------------------------------
+      - name: Build torch-spyre
+        uses: ./.github/actions/build-torch-spyre
+        with:
+          torch_spyre_dir: torch-spyre
 
+      # NOTE: pytest-testmon is installed by run-test-suite/action.yaml
+      # itself (testmon: 'true' below), in the same cd'd/activated venv
+      # tests/run_test.sh actually runs from -- not as a separate step
+      # here. A separate step has to independently re-derive the checkout
+      # directory and can land in a different resolved path than the
+      # action does.
+
+      # -----------------------------------------------------------------
+      # Restore THIS SUITE's own testmon data out of the shared bundle
+      # relayed by restage_previous_testmon, if one exists.
+      # continue-on-error covers a brand-new suite (never in a previous
+      # bundle) or a suite filtered out of the previous run's test_type --
+      # testmon just collects a fresh baseline this run instead of
+      # selecting against stale/missing data.
       # -----------------------------------------------------------------
       - name: Download previous testmon bundle
         id: download_testmon
@@ -505,7 +513,7 @@ jobs:
           retention-days: 1
 
   # -------------------------------------------------------------------------
-  # Job 6: consolidate every suite's "<CONFIG_ID>_testmon" artifact from
+  # Job 5: consolidate every suite's "<CONFIG_ID>_testmon" artifact from
   # THIS run into ONE combined "testmon_bundle" artifact -- the single
   # thing restage_previous_testmon looks up next run. `always()` so
   # suites that succeeded still get bundled even if others in the matrix
