@@ -255,42 +255,7 @@ class TestSpyreKernelLogging:
 class TestBundleLogging:
     """Tests for logger.info call in generate_bundle."""
 
-    def test_logs_unrolling_label(self):
-        logger = logging.getLogger("spyre.inductor.sdsc_compile")
-        with patch.object(logger, "isEnabledFor", return_value=True):
-            with patch.object(logger, "info") as mock_info:
-                with patch(
-                    "torch_spyre._inductor.codegen.bundle.unroll_loop_specs",
-                    side_effect=lambda specs: specs,
-                ):
-                    with patch(
-                        "torch_spyre._inductor.codegen.bundle.compile_op_spec",
-                        return_value=({}, [], [], []),
-                    ):
-                        with patch("builtins.open", MagicMock()):
-                            from torch_spyre._inductor.codegen.bundle import (
-                                generate_bundle,
-                            )
-
-                            op = _make_add_op()
-                            generate_bundle(
-                                kernel_name="test_kernel",
-                                output_dir="/tmp/test",
-                                specs=[op],
-                                use_symbols=False,
-                                unroll_loops=True,
-                            )
-
-                info_calls = mock_info.call_args_list
-                op_spec_calls = [
-                    c
-                    for c in info_calls
-                    if len(c.args) >= 1 and "OP SPECS" in c.args[0]
-                ]
-                assert len(op_spec_calls) >= 1
-                assert "UNROLLING" in op_spec_calls[0].args[1]
-
-    def test_logs_pass_through_label(self):
+    def test_logs_bundle_generation_label(self):
         logger = logging.getLogger("spyre.inductor.sdsc_compile")
         with patch.object(logger, "isEnabledFor", return_value=True):
             with patch.object(logger, "info") as mock_info:
@@ -309,7 +274,6 @@ class TestBundleLogging:
                             output_dir="/tmp/test",
                             specs=[op],
                             use_symbols=False,
-                            unroll_loops=False,
                         )
 
                 info_calls = mock_info.call_args_list
@@ -319,4 +283,4 @@ class TestBundleLogging:
                     if len(c.args) >= 1 and "OP SPECS" in c.args[0]
                 ]
                 assert len(op_spec_calls) >= 1
-                assert "LOOP-PASS-THROUGH" in op_spec_calls[0].args[1]
+                assert "BUNDLE GENERATION" in op_spec_calls[0].args[0]
