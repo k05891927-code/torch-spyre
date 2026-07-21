@@ -167,6 +167,8 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          ref: ${{ inputs.ref || github.event.pull_request.head.sha || github.sha }}
+          repository: ${{ inputs.repository || github.event.pull_request.head.repo.full_name || github.repository }}
 
       - name: Find previous run
         id: find
@@ -207,7 +209,7 @@ jobs:
           if [[ -n "$RUN_ID" ]]; then
             echo "Found previous run: $RUN_ID (sha $TARGET_SHA)"
             echo "run_id=$RUN_ID" >> "$GITHUB_OUTPUT"
-            echo "is_first_run=false" >> "$GITHUB_OUTPUT"
+            echo "is_first_run=true" >> "$GITHUB_OUTPUT"
           else
             echo "No previous completed run found for sha '$TARGET_SHA' -- treating as first run"
             echo "run_id=" >> "$GITHUB_OUTPUT"
@@ -218,6 +220,7 @@ jobs:
   # Job 2: generate the suite matrix -- same filter_configs.py logic
   # _test_matrix.yaml uses.
   # -------------------------------------------------------------------------
+
   generate_matrix:
     name: Generate test matrix (${{ inputs.test_type || 'full' }})
     runs-on: ubuntu-latest
@@ -226,6 +229,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          ref: ${{ inputs.ref || github.event.pull_request.head.sha || github.sha }}
+          repository: ${{ inputs.repository || github.event.pull_request.head.repo.full_name || github.repository }}
           sparse-checkout: |
             tests/configs/torch_spyre_tests
             tests/oot_framework/utils/filter_configs.py
@@ -243,7 +248,7 @@ jobs:
             --format matrix-json)
           echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
 
-          echo "--- Matrix suite count: $(echo "$matrix" | python3 -c 'import json,sys; print(len(json.load(sys.stdin)["include"]))') ---"
+          echo "--- Matrix suite count: $(echo "$matrix" | python3 -c 'import json,sys; print(len(json.load(sys.stdin)["suite"]))') ---"
           echo "$matrix" | python3 -m json.tool
 
           
@@ -328,6 +333,8 @@ jobs:
       - uses: actions/checkout@v4
         with:
           path: torch-spyre
+          ref: ${{ inputs.ref || github.event.pull_request.head.sha || github.sha }}
+          repository: ${{ inputs.repository || github.event.pull_request.head.repo.full_name || github.repository }}
 
       - uses: ./.github/actions/gather-runner-info
         with:
