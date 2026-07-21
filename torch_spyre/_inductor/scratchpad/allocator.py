@@ -2074,4 +2074,7 @@ def scratchpad_planning(
         # the state of the graph allowing a second attempt with a
         # greedy approach.
         logger.debug("solve error detected. falling back to greedy solver.")
-        GreedyLayoutSolver(_lx_planning_size()).plan_allocation(graph)
+        # GreedyLayoutSolver(_lx_planning_size()).plan_allocation(graph)
+        ScratchpadAllocator(GreedyLayoutSolver(_lx_planning_size())).plan_allocation(
+            graph
+        )
